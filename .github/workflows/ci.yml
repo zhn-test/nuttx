@@ -9,11 +9,11 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  #approved:
-  #  if: github.event.review.state == 'approved'
-  #  runs-on: ubuntu-latest
-  #  steps:
-  #    - run: echo "This PR was approved"
+  approved:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This PR was approved"
 
   ci:
     uses: zhn-test/public-actions/.github/workflows/test.yml@main
