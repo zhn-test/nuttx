@@ -45,6 +45,8 @@ jobs:
       - name: Determine Target Branches
         id: gittargets
         shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           OS_REF=""
           APPS_REF=""
@@ -73,13 +75,13 @@ jobs:
             # Determine the repo and leave that unset to use the normal checkout behavior
             # of using the merge commit instead of HEAD
             case $GITHUB_REPOSITORY in
-              "apache/nuttx")
+              "zhn-test/nuttx")
                 # OS
                 echo "Triggered by change in OS"
                 APPS_REF=$REF_NAME
                 ;;
 
-              "apache/nuttx-apps" )
+              "zhn-test/nuttx-apps" )
                 # APPS
                 OS_REF=$REF_NAME
                 echo "Triggered by change in APPS"
@@ -91,13 +93,54 @@ jobs:
             esac
           fi
 
+          # Parse cross-repo PR dependencies from PR body
+          # Format: depends-on: [apache/nuttx-apps/pull/1234 https://github.com/apache/nuttx/pull/5678]
+          if [ -n "$PR_BODY" ]; then
+            DEPS=""
+            ARRAY_DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*\[[^]]+\]' | head -1) || true
+            if [ -n "$ARRAY_DEPS" ]; then
+              DEPS=$(echo "$ARRAY_DEPS" | grep -oE '(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+') || true
+            else
+              DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+' | sed 's/depends-on:[[:space:]]*//' | head -1) || true
+            fi
+
+            for DEP in $DEPS; do
+              DEP=$(echo "$DEP" | sed 's|https://github.com/||')
+              DEP_REPO=$(echo "$DEP" | awk -F'/pull/' '{print $1}')
+              DEP_PR_NUM=$(echo "$DEP" | awk -F'/pull/' '{print $2}')
+
+              if [[ "$DEP_REPO" != "zhn-test/nuttx" && "$DEP_REPO" != "zhn-test/nuttx-apps" ]]; then
+                echo "::warning::Ignoring unsupported dependency repo: $DEP_REPO"
+                continue
+              fi
+
+              DEP_INFO=$(curl -s "https://api.github.com/repos/${DEP_REPO}/pulls/${DEP_PR_NUM}")
+              DEP_BRANCH=$(echo "$DEP_INFO" | jq -r '.head.ref')
+              DEP_SHA=$(echo "$DEP_INFO" | jq -r '.head.sha')
+
+              if [ -n "$DEP_BRANCH" ] && [ "$DEP_BRANCH" != "null" ]; then
+                echo "Found cross-repo dependency: ${DEP_REPO}/pull/${DEP_PR_NUM} (branch: ${DEP_BRANCH}, sha: ${DEP_SHA})"
+                case $DEP_REPO in
+                  "zhn-test/nuttx")
+                    OS_REF=$DEP_BRANCH
+                    ;;
+                  "zhn-test/nuttx-apps")
+                    APPS_REF=$DEP_BRANCH
+                    ;;
+                esac
+              else
+                echo "::warning::Could not resolve branch for ${DEP_REPO}/pull/${DEP_PR_NUM}, using default branch"
+              fi
+            done
+          fi
+
           echo "os_ref=$OS_REF" >> $GITHUB_OUTPUT
           echo "apps_ref=$APPS_REF" >> $GITHUB_OUTPUT
 
       - name: Checkout nuttx repo
         uses: actions/checkout@v6
         with:
-          repository: apache/nuttx
+          repository: zhn-test/nuttx
           ref: ${{ steps.gittargets.outputs.os_ref }}
           path: sources/nuttx
           fetch-depth: 1
@@ -107,7 +150,7 @@ jobs:
       - name: Checkout apps repo
         uses: actions/checkout@v6
         with:
-          repository: apache/nuttx-apps
+          repository: zhn-test/nuttx-apps
           ref: ${{ steps.gittargets.outputs.apps_ref }}
           path: sources/apps
           fetch-depth: 1
@@ -123,7 +166,7 @@ jobs:
 
   # Select the Linux Builds based on PR Arch Label
   Linux-Arch:
-    uses: apache/nuttx/.github/workflows/arch.yml@master
+    uses: zhn-test/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
       os: Linux
@@ -292,7 +335,7 @@ jobs:
 
   # Select the macOS Builds based on PR Arch Label
   macOS-Arch:
-    uses: apache/nuttx/.github/workflows/arch.yml@master
+    uses: zhn-test/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
       os: macOS
@@ -352,7 +395,7 @@ jobs:
 
   # Select the msys2 Builds based on PR Arch Label
   msys2-Arch:
-    uses: apache/nuttx/.github/workflows/arch.yml@master
+    uses: zhn-test/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
       os: msys2
@@ -435,7 +478,7 @@ jobs:
 
   # Select the msvc Builds based on PR Arch Label
   msvc-Arch:
-    uses: apache/nuttx/.github/workflows/arch.yml@master
+    uses: zhn-test/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
       os: msvc
