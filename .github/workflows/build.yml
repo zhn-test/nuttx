@@ -41,6 +41,9 @@ jobs:
   # Fetch the source from nuttx and nuttx-apps repos
   Fetch-Source:
     runs-on: ubuntu-latest
+    outputs:
+      DEPENDS_ON: ${{ steps.parse-dependencies.outputs.DEPENDS_ON }}
+      ALL_PR: ${{ steps.parse-dependencies.outputs.ALL_PR }}
     steps:
       - name: Determine Target Branches
         id: gittargets
@@ -154,6 +157,169 @@ jobs:
           ref: ${{ steps.gittargets.outputs.apps_ref }}
           path: sources/apps
           fetch-depth: 1
+
+      - name: Parse PR Dependencies
+        id: parse-dependencies
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          printf '%s\n' "$PR_BODY" > pull_request.body.txt
+
+          DEPENDS_ON=""
+          ARRAY_DEPS=$(grep -oE 'depends-on:[[:space:]]*\[[^]]+\]' pull_request.body.txt | head -1) || true
+          if [ -n "$ARRAY_DEPS" ]; then
+            FULL_URLS=$(echo "$ARRAY_DEPS" | grep -oE 'https://github.com/zhn-test/nuttx(-apps)?/pull/[0-9]+' | sed 's|https://github.com/||') || true
+            STRIPPED=$(echo "$ARRAY_DEPS" | sed 's|https://[^] ,]*||g')
+            SHORT_REFS=$(echo "$STRIPPED" | grep -oE 'zhn-test/nuttx(-apps)?/pull/[0-9]+') || true
+            DEPENDS_ON=$(printf '%s\n%s' "$FULL_URLS" "$SHORT_REFS" | grep -v '^$' | tr '\n' ' ') || true
+          else
+            FULL_URLS=$(grep -oE 'depends-on:[[:space:]]*https://github.com/zhn-test/nuttx(-apps)?/pull/[0-9]+' pull_request.body.txt | sed 's/depends-on:[[:space:]]*//' | sed 's|https://github.com/||' | head -1) || true
+            SHORT_REFS=$(grep -oE 'depends-on:[[:space:]]*zhn-test/nuttx(-apps)?/pull/[0-9]+' pull_request.body.txt | sed 's/depends-on:[[:space:]]*//' | head -1) || true
+            DEPENDS_ON=$(printf '%s\n%s' "$FULL_URLS" "$SHORT_REFS" | grep -v '^$' | tr '\n' ' ') || true
+          fi
+
+          VALIDATED_DEPS=""
+          for dep in $DEPENDS_ON; do
+            DEP_REPO=$(echo "$dep" | awk -F'/pull/' '{print $1}')
+            if [[ "$DEP_REPO" == "zhn-test/nuttx" || "$DEP_REPO" == "zhn-test/nuttx-apps" ]]; then
+              VALIDATED_DEPS="$VALIDATED_DEPS $dep"
+            else
+              echo "::warning::Ignoring unsupported dependency repo: $dep"
+            fi
+          done
+          DEPENDS_ON=$(echo "$VALIDATED_DEPS" | awk '{for(i=1;i<=NF;i++) if(!a[$i]++) printf "%s%s",$i,(i==NF?ORS:OFS)}')
+          DEPENDS_ON=$(echo "$DEPENDS_ON" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          echo "Validated DEPENDS_ON: $DEPENDS_ON"
+          echo "DEPENDS_ON=$DEPENDS_ON" >> "$GITHUB_OUTPUT"
+
+          ALL_PR="$DEPENDS_ON"
+          if [ -n "$ALL_PR" ]; then
+            ALL_PR="$ALL_PR ${PR_REPO}/pull/${PR_NUM}"
+          fi
+          ALL_PR=$(echo "$ALL_PR" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          echo "ALL_PR=$ALL_PR" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch and Cherry-pick Dependent PRs
+        if: ${{ github.event_name == 'pull_request' && steps.parse-dependencies.outputs.DEPENDS_ON != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPENDS_ON: ${{ steps.parse-dependencies.outputs.DEPENDS_ON }}
+          ALL_PR: ${{ steps.parse-dependencies.outputs.ALL_PR }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          CURRENT_ACTION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -x
+          git config --global user.email "nuttx-ci@zhn-test.com"
+          git config --global user.name "NuttX CI"
+
+          git -C sources/nuttx fetch --unshallow || true
+          git -C sources/apps fetch --unshallow || true
+
+          fetch_failed=0
+          cp_failed=0
+          fetch_log=$(pwd)/fetch.log
+          cp_log=$(pwd)/cp.log
+
+          for DEPENDENCY in $DEPENDS_ON; do
+            REPO_FULL=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $1}')
+            PR_NUMBER=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $2}')
+
+            case "$REPO_FULL" in
+              "zhn-test/nuttx")
+                LOCAL_PATH="sources/nuttx"
+                ;;
+              "zhn-test/nuttx-apps")
+                LOCAL_PATH="sources/apps"
+                ;;
+              *)
+                echo "::error::Unknown repo: $REPO_FULL"
+                exit 1
+                ;;
+            esac
+
+            echo "=== Processing dependency: $DEPENDENCY ==="
+
+            PR_DATA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/$REPO_FULL/pulls/$PR_NUMBER")
+            PR_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
+            PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
+
+            if [ -z "$PR_SHA" ] || [ "$PR_SHA" = "null" ]; then
+              echo "::error::Failed to get SHA for $DEPENDENCY"
+              exit 1
+            fi
+
+            if [ "$PR_STATE" != "open" ]; then
+              echo "::warning::PR $DEPENDENCY is not open (state: $PR_STATE), skipping"
+              continue
+            fi
+
+            curl -s -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO_FULL/statuses/$PR_SHA" \
+              -d '{
+                "state": "pending",
+                "description": "CI triggered by '"${PR_REPO}"'/pull/'"${PR_NUM}"'",
+                "context": "NuttX CI (depends-on)",
+                "target_url": "'"${CURRENT_ACTION_URL}"'"
+              }' || true
+
+            cd "$LOCAL_PATH"
+
+            if ! git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" >> "$fetch_log" 2>&1; then
+              echo "::error::Failed to fetch $DEPENDENCY"
+              cat "$fetch_log"
+              fetch_failed=1
+              cd - > /dev/null
+              break
+            fi
+
+            common_base=$(git merge-base -a "pr-$PR_NUMBER" HEAD || true)
+            if [ -z "$common_base" ]; then
+              echo "::error::No common ancestor for PR #$PR_NUMBER. PR needs rebase."
+              cp_failed=1
+              cd - > /dev/null
+              break
+            fi
+
+            COMMITS=$(git rev-list --reverse HEAD.."$PR_SHA")
+            if [ -z "$COMMITS" ]; then
+              echo "::warning::No new commits to cherry-pick for $DEPENDENCY"
+              cd - > /dev/null
+              continue
+            fi
+
+            if ! git cherry-pick $COMMITS >> "$cp_log" 2>&1; then
+              echo "::error::Cherry-pick failed for $DEPENDENCY"
+              cat "$cp_log"
+              if grep -q "is a merge" "$cp_log" 2>/dev/null; then
+                echo "::error::PR contains merge commits. Please rebase instead of merge."
+              fi
+              cp_failed=1
+              cd - > /dev/null
+              break
+            fi
+
+            echo "  Successfully cherry-picked $DEPENDENCY"
+            cd - > /dev/null
+          done
+
+          if [ "$fetch_failed" -ne 0 ]; then
+            echo "::error::Dependency fetch failed."
+            exit 1
+          fi
+          if [ "$cp_failed" -ne 0 ]; then
+            echo "::error::Dependency cherry-pick failed."
+            exit 1
+          fi
 
       - name: Tar sources
         run: tar zcf sources.tar.gz sources
@@ -527,3 +693,71 @@ jobs:
           name: msvc-builds
           path: ./sources/buildartifacts/
         continue-on-error: true
+
+
+  Post-Processing:
+    needs: [Fetch-Source, Linux, OOT-Build, macOS, msys2, msvc]
+    if: ${{ always() && needs.Fetch-Source.outputs.DEPENDS_ON != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      pull-requests: read
+      issues: write
+    steps:
+      - name: Update Dependent PR Statuses
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPENDS_ON: ${{ needs.Fetch-Source.outputs.DEPENDS_ON }}
+          ALL_PR: ${{ needs.Fetch-Source.outputs.ALL_PR }}
+          LINUX_RESULT: ${{ needs.Linux.result }}
+          OOT_RESULT: ${{ needs.OOT-Build.result }}
+          MACOS_RESULT: ${{ needs.macOS.result }}
+          MSYS2_RESULT: ${{ needs.msys2.result }}
+          MSVC_RESULT: ${{ needs.msvc.result }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          CURRENT_ACTION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "Build results: Linux=$LINUX_RESULT OOT=$OOT_RESULT macOS=$MACOS_RESULT msys2=$MSYS2_RESULT msvc=$MSVC_RESULT"
+
+          ci_status="success"
+          for result in "$LINUX_RESULT" "$OOT_RESULT" "$MACOS_RESULT" "$MSYS2_RESULT" "$MSVC_RESULT"; do
+            if [ "$result" = "failure" ]; then
+              ci_status="failure"
+              break
+            fi
+          done
+
+          echo "Overall CI status: $ci_status"
+
+          for DEPENDENCY in $DEPENDS_ON; do
+            REPO_FULL=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $1}')
+            PR_NUMBER=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $2}')
+
+            PR_DATA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/$REPO_FULL/pulls/$PR_NUMBER")
+            LATEST_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
+
+            if [ -z "$LATEST_SHA" ] || [ "$LATEST_SHA" = "null" ]; then
+              echo "::warning::Failed to get SHA for $DEPENDENCY, skipping status update"
+              continue
+            fi
+
+            curl -s -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO_FULL/statuses/$LATEST_SHA" \
+              -d '{
+                "state": "'"$ci_status"'",
+                "description": "CI '"$ci_status"' (triggered by '"${PR_REPO}"'/pull/'"${PR_NUM}"')",
+                "context": "NuttX CI (depends-on)",
+                "target_url": "'"${CURRENT_ACTION_URL}"'"
+              }'
+
+            COMMENT_BODY="NuttX CI $ci_status.\nPR list: $ALL_PR\nCI: $CURRENT_ACTION_URL"
+            curl -s -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO_FULL/issues/$PR_NUMBER/comments" \
+              -d "{\"body\": \"$COMMENT_BODY\"}"
+          done
