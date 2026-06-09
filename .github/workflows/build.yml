@@ -32,7 +32,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: build-${{ github.event.pull_request.number || github.ref }}
@@ -148,7 +147,6 @@ jobs:
         shell: bash
         env:
           DEPENDS_ON: ${{ steps.gittargets.outputs.depends_on }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -172,18 +170,7 @@ jobs:
                 ;;
             esac
 
-            DEP_INFO=$(curl -fsSL \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${DEP_REPO}/pulls/${DEP_PR_NUM}")
-            DEP_SHA=$(echo "$DEP_INFO" | jq -r '.head.sha')
-
-            if [ -z "$DEP_SHA" ] || [ "$DEP_SHA" = "null" ]; then
-              echo "::error::Could not resolve head sha for ${DEP_REPO}/pull/${DEP_PR_NUM}"
-              exit 1
-            fi
-
-            echo "Applying dependency ${DEP_REPO}/pull/${DEP_PR_NUM} (${DEP_SHA})"
+            echo "Applying dependency ${DEP_REPO}/pull/${DEP_PR_NUM}"
             if [ -f "$REPO_PATH/.git/shallow" ]; then
               git -C "$REPO_PATH" fetch --unshallow origin
             fi
@@ -195,7 +182,7 @@ jobs:
               exit 1
             fi
 
-            COMMITS=$(git -C "$REPO_PATH" rev-list --reverse "HEAD..${DEP_SHA}") || {
+            COMMITS=$(git -C "$REPO_PATH" rev-list --reverse "HEAD..dep-${DEP_PR_NUM}") || {
               echo "::error::Could not list commits for ${DEP_REPO}/pull/${DEP_PR_NUM}"
               exit 1
             }
