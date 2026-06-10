@@ -96,7 +96,9 @@ jobs:
 
           # Parse PR dependencies from PR body
           # Format: depends-on: [apache/nuttx-apps/pull/1234 https://github.com/apache/nuttx/pull/5678]
-          if [ -n "$PR_BODY" ]; then
+          # Only parsed for normal PRs; release-branch/tag builds use the
+          # matching branch of the other repo and ignore depends-on.
+          if [ -n "$PR_BODY" ] && [[ ! $REF =~ refs/heads/releases/*|refs/tags/* ]]; then
             ARRAY_DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*\[[^]]+\]' | head -1) || true
             if [ -n "$ARRAY_DEPS" ]; then
               DEPS=$(echo "$ARRAY_DEPS" | grep -oE '(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+') || true
@@ -118,6 +120,12 @@ jobs:
             done
 
             DEPENDS_ON=$(echo "$DEPENDS_ON" | tr ' ' '\n' | awk 'NF && !a[$0]++' | xargs)
+
+            # Warn if a depends-on line is present but nothing valid was parsed
+            # (e.g. wrong repo, or a typo such as "push" instead of "pull").
+            if echo "$PR_BODY" | grep -qiE 'depends-on:' && [ -z "$DEPENDS_ON" ]; then
+              echo "::warning::Found a 'depends-on:' line but parsed no valid dependency. Expected: depends-on: [apache/nuttx/pull/<N> apache/nuttx-apps/pull/<M>]"
+            fi
           fi
 
           echo "os_ref=$OS_REF" >> $GITHUB_OUTPUT
