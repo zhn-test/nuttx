@@ -96,9 +96,9 @@ jobs:
 
           # Parse PR dependencies from PR body
           # Format: depends-on: [apache/nuttx-apps/pull/1234 https://github.com/apache/nuttx/pull/5678]
-          # Only parsed for normal PRs; release-branch/tag builds use the
-          # matching branch of the other repo and ignore depends-on.
-          if [ -n "$PR_BODY" ] && [[ ! $REF =~ refs/heads/releases/*|refs/tags/* ]]; then
+          # Only processed for PRs targeting master. Release-branch / back-port
+          # PRs ignore depends-on and build against the matching release branch.
+          if [ -n "$PR_BODY" ] && [ "$GITHUB_BASE_REF" = "master" ]; then
             ARRAY_DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*\[[^]]+\]' | head -1) || true
             if [ -n "$ARRAY_DEPS" ]; then
               DEPS=$(echo "$ARRAY_DEPS" | grep -oE '(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+') || true
