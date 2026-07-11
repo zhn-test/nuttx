@@ -45,7 +45,7 @@
 #include "stm32_otg.h"
 #include "linum-stm32h753bi.h"
 
-#ifdef CONFIG_STM32H7_OTGFS
+#ifdef CONFIG_STM32_OTGFS
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -138,7 +138,7 @@ void stm32_usbinitialize(void)
    * Power On, and Overcurrent GPIOs
    */
 
-#ifdef CONFIG_STM32H7_OTGFS
+#ifdef CONFIG_STM32_OTGFS
   stm32_configgpio(GPIO_OTGFS_VBUS);
   stm32_configgpio(GPIO_OTGFS_PWRON);
   stm32_configgpio(GPIO_OTGFS_OVER);
@@ -271,9 +271,11 @@ void stm32_usbhost_vbusdrive(int iface, bool enable)
 {
   DEBUGASSERT(iface == 0);
 
-  /* Set the Power Switch by driving the active high enable pin */
+  /* Set the Power Switch by driving the enable pin.  On the Linum board the
+   * USB power switch enable (PI12) is active low, so invert the request.
+   */
 
-  stm32_gpiowrite(GPIO_OTGFS_PWRON, enable);
+  stm32_gpiowrite(GPIO_OTGFS_PWRON, !enable);
 }
 #endif
 

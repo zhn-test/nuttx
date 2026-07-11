@@ -946,6 +946,30 @@ Of course, this configuration can only be used in environments that support X11!
       -CONFIG_EXAMPLES_NXTERM=n
       +CONFIG_EXAMPLES_NXTERM=y
 
+nxdoom
+------
+
+Play :doc:`NXDoom </applications/games/nxdoom/index>` on the Simulator using X11
+keyboard input and graphics. Read the docs for NXDoom to see how to play.
+
+By default this NuttX board config mounts the current directory from the host where it was executed, making the files visible internally at /data directory.
+So you can copy the DOOM1.WAD (or other WAD file) to the current directory where
+you compiled NuttX and run Doom from there:
+
+.. code:: console
+
+   $ cp ~/Download/DOOM1.WAD .
+   $ ./nuttx
+   NuttShell (NSH) NuttX-13.0.0
+   nsh> ls -l /data/DOOM1.WAD
+   -rw-rw-r--     4196020 2026-07-03 12:32 /data/DOOM1.WAD
+   nsh> nxdoom -iwad /data/DOOM1.WAD
+
+.. warning::
+
+   X11 keyboard codes are not perfectly translated to the NuttX codec currently,
+   so some controls will not work properly.
+
 nxffs
 -----
 
@@ -1903,10 +1927,14 @@ This is a configuration with login password protection for NSH.
 
 .. note::
 
-   This config has password protection enabled. The default login info is:
+   This config has password protection enabled.  After configuring from
+   defconfig, set the admin password in menuconfig (Board Selection →
+   Auto-generate /etc/passwd) or export ``NUTTX_ROMFS_PASSWD_PASSWORD``
+   before building.  NuttX CI uses the documented test password
+   ``NuttXSimLogin1`` for this configuration.
 
-   * USERNAME: root
-   * PASSWORD: Administrator
+   * USERNAME: root (default)
+   * PASSWORD: set at build time (not stored in defconfig)
 
    The encrypted password is retained in ``/etc/passwd``.
    You can disable the password protection by
@@ -1985,6 +2013,91 @@ Requirement: ``cansequence`` tool from ``linux-can/can-utils``
       can0  002   [1]  12
 
 
+lely and lely-sock
+------------------
+
+These configurations build the Lely CANopen demos over the CAN character
+driver. Both the slave (``coslave`` built-in, node ``0x02``) and the master
+(``comaster`` built-in, node ``0x01``) are embedded in the single image. See
+:doc:`/applications/examples/lely_slave/index` and
+:doc:`/applications/examples/lely_master/index`.
+
+The master orchestrates a small CANopen network: it reads the slave's device
+type over an SDO transfer, commands the slave to OPERATIONAL with an NMT
+start, then produces SYNC while the slave streams a counter back in a
+synchronous TPDO which the master receives via an RPDO.
+
+The ``sim:lely`` configuration uses the CAN character driver; ``sim:lely-sock``
+is the same demo over SocketCAN (``CONFIG_SIM_CANDEV_SOCK``). Both bridge to a
+host ``vcan`` interface named ``can0``, which must exist and be up on the host::
+
+    sudo modprobe vcan
+    sudo ip link add dev can0 type vcan
+    sudo ip link set up can0
+
+The SocketCAN example brings its own NuttX interface up (via ``netlib_ifup()``),
+so ``coslave``/``comaster`` can be started directly without a manual ``ifup``.
+
+.. _testing_lely_canopen_sim:
+
+Testing a CANopen network on the simulator
+==========================================
+
+The simulator CAN character driver (``CONFIG_SIM_CANDEV_CHAR``) bridges
+``/dev/can0`` to a host SocketCAN interface named ``can0`` (the index is
+``CONFIG_SIM_CANDEV_CHAR_IDX``). Each simulator process owns one host socket,
+so the two nodes are run as **two separate processes of the same image** on
+the shared ``can0`` bus.
+
+1. Create a virtual CAN interface named ``can0`` on the host:
+
+   .. code:: console
+
+      $ sudo modprobe vcan
+      $ sudo ip link add dev can0 type vcan
+      $ sudo ip link set up can0
+
+2. Build the image:
+
+   .. code:: console
+
+      $ ./tools/configure.sh sim:lely
+      $ make
+
+3. Run the slave in one terminal and the master in another (start the slave
+   first so it is up when the master boots it):
+
+   .. code:: console
+
+      # terminal 1
+      $ ./nuttx
+      nsh> coslave &
+
+      # terminal 2
+      $ ./nuttx
+      nsh> comaster &
+
+   The master prints the exchange it drives::
+
+      SDO: slave device type (0x1000) = 0x00000000
+      NMT: master + slave 0x02 OPERATIONAL
+      PDO rx: counter = 17
+      PDO rx: counter = 18
+      PDO rx: counter = 19
+
+4. Observe the bus from the host with ``candump``:
+
+   .. code:: console
+
+      $ candump can0
+      can0  702   [1]  7F                         # slave heartbeat (pre-op)
+      can0  602   [8]  40 00 10 00 00 00 00 00    # master SDO upload request
+      can0  582   [8]  43 00 10 00 00 00 00 00    # slave SDO upload response
+      can0  000   [2]  01 02                      # NMT start node 0x02
+      can0  080   [0]                             # SYNC (master)
+      can0  182   [4]  11 00 00 00                # slave TPDO (counter)
+
+
 nxscope
 -------
 
@@ -2024,40 +2137,29 @@ mounted at ``/etc`` and will look like this at run-time:
 start-up script; ``/etc/passwd`` is the password file.
 
 The ``/etc/passwd`` file is auto-generated at build time when
-``CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE`` is set.  Enable the option and set
-credentials via ``make menuconfig``:
+``CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE`` is set.  Configure credentials in
+``make menuconfig`` (see :ref:`mkpasswd_autogen`):
 
 * ``CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE=y``
-* ``CONFIG_NSH_CONSOLE_LOGIN=y`` (required, otherwise login is not enforced)
+* ``CONFIG_NSH_CONSOLE_LOGIN=y`` with **Encrypted password file** verification
 * ``CONFIG_BOARD_ETC_ROMFS_PASSWD_USER`` (default: ``root``)
-* ``CONFIG_BOARD_ETC_ROMFS_PASSWD_PASSWORD`` (required, build fails if empty or shorter than 8 characters)
+* Admin password — required in menuconfig or via ``NUTTX_ROMFS_PASSWD_PASSWORD``
+  (minimum 8 characters; not saved in defconfig)
+* TEA keys — enable **Generate random TEA encryption keys automatically**, or
+  set ``CONFIG_FSUTILS_PASSWD_KEY1`` … ``KEY4`` manually
 
-The password is hashed with TEA at build time by the host tool
-``tools/mkpasswd``; the plaintext is **not** stored in the firmware.
+The password is hashed with TEA by ``tools/mkpasswd``; the plaintext is **not**
+stored in the firmware.
 
-For the full description of the build-time password generation mechanism,
-TEA key configuration, file format, and verification steps, see
-:ref:`mkpasswd_autogen`.
-
-The format of the password file is:
-
-.. code:: text
-
-   user:x:uid:gid:home
-
-Where:
-
-* user: User name
-* x: Encrypted password
-* uid: User ID (0 for now)
-* gid: Group ID (0 for now)
-* home: Login directory (/ for now)
-
-For configuration, verification steps, and TEA key details, see
+For the full build flow, CI credentials, and verification steps, see
 :ref:`mkpasswd_autogen`.
 
 Login test inside the simulator
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use the admin password you set at build time (menuconfig or
+``NUTTX_ROMFS_PASSWD_PASSWORD``).  For ``sim/login``, CI uses the documented
+test password ``NuttXSimLogin1``; see :ref:`mkpasswd_autogen`.
 
 .. code:: console
 

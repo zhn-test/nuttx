@@ -133,7 +133,7 @@ jobs:
           echo "depends_on=$DEPENDS_ON" >> $GITHUB_OUTPUT
 
       - name: Checkout nuttx repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: zhn-test/nuttx
           ref: ${{ steps.gittargets.outputs.os_ref }}
@@ -143,7 +143,7 @@ jobs:
         run: git -C sources/nuttx fetch --tags
 
       - name: Checkout apps repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: zhn-test/nuttx-apps
           ref: ${{ steps.gittargets.outputs.apps_ref }}
@@ -242,6 +242,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: 1
+      # Documented sim/login CI test credential (not a production secret).
+      # Used when CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE=y and defconfig omits
+      # the password.  See tools/update_romfs_password.sh.
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1
 
     strategy:
       max-parallel: 12
@@ -269,7 +273,7 @@ jobs:
         run: tar zxf sources.tar.gz
 
       - name: Docker Login
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -364,7 +368,7 @@ jobs:
         run: tar zxf sources.tar.gz
 
       - name: Docker Login
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -408,6 +412,8 @@ jobs:
     runs-on: macos-15-intel
     needs: macOS-Arch
     if: ${{ needs.macOS-Arch.outputs.skip_all_builds != '1' }}
+    env:
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1
     strategy:
       max-parallel: 2
       matrix:
@@ -424,7 +430,7 @@ jobs:
 
       - name: Restore Tools Cache
         id: cache-tools
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         env:
           cache-name: ${{ runner.os }}-cache-tools
         with:
@@ -476,7 +482,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
@@ -550,7 +556,7 @@ jobs:
     if: ${{ needs.msvc-Arch.outputs.skip_all_builds != '1' }}
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Set up Python environment and install kconfiglib
       - name: Set up Python and install kconfiglib
         uses: actions/setup-python@v6

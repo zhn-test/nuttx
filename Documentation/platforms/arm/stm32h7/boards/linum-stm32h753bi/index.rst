@@ -380,6 +380,20 @@ nsh
 Configures the NuttShell (nsh) located at apps/examples/nsh. This
 configuration enables a serial console on UART1.
 
+The procfs file system, CPU load measurement and stack coloration are
+enabled, so the system can be monitored live with the ``top`` command
+(press ``q`` to exit)::
+
+    nsh> top
+    top - up 00:00:19
+    Tasks: 2 total, 2 running, 0 sleeping
+    %Cpu(s):  8.1 busy, 91.9 idle
+    Mem :  1004876 total,     8140 used,   996736 free
+
+      TID   PID  PPID PRI POLICY   TYPE    NPX STATE    EVENT     SIGMASK            STACK    USED FILLED    CPU COMMAND
+        0     0     0   0 FIFO     Kthread   - Ready              0000000000000000 0002024 0000500  24.7%  91.8% Idle_Task
+        2     2     0 100 RR       Task      - Running            0000000000000000 0004048 0001952  48.2%   8.1% nsh_main
+
 usbnsh
 ------
 
@@ -721,7 +735,7 @@ After that check if your PC recognized the usb driver::
     [27221.266103] sd 0:0:0:0: [sda] Attached SCSI removable disk
     [27228.147377] FAT-fs (sda1): Volume was not properly unmounted. Some data may be corrupt. Please run fsck.
 
-**OBS:** This example disable the macro CONFIG_STM32H7_SDMMC_IDMA, for more information read the file: arch/arm/stm32h7/stm32_sdmmc.c
+**OBS:** This example disable the macro CONFIG_STM32_SDMMC_IDMA, for more information read the file: arch/arm/stm32h7/stm32_sdmmc.c
 
 netnsh
 ------
@@ -894,6 +908,68 @@ Once the **fd** command works, run the lvgl examples. ::
   nsh> lvgldemo benchmark
 
 **WARNING:** For this example, the total SDRAM size was reduced from 8M to 6M and the LTDC base address was moved to address 0xC0600000 to avoid video memory invasion since the SDRAM was mapped to use the nuttx heap. If using the example with 2 layers, the reserved value will need to be doubled.
+
+lvglterm
+--------
+
+Runs the ``lvglterm`` example: an interactive NuttShell (NSH) terminal on the
+display. This board uses the touch input variant -- an on-screen LVGL keyboard,
+driven by the FT5X06 touchscreen, feeds the commands while the NSH output is
+rendered in an LVGL text area.::
+
+  nsh> lvglterm
+
+Type a command on the on-screen keyboard and press Enter; the command line
+``nsh> <command>`` and its output appear in the terminal area above the
+keyboard.
+
+lvglterm_kbda
+-------------
+
+**Purpose:** runs the ``lvglterm`` example -- an interactive NuttShell (NSH)
+terminal rendered on the display -- driven by an external **USB HID keyboard**,
+demonstrating that the OTG FS USB host and the microSD card can be used at the
+same time on this board.
+
+The board's OTG FS port is enabled as a USB host (VBUS power switch on PI12),
+so a USB HID keyboard plugged into the service connector is enumerated as
+``/dev/kbda`` and its keys are streamed to NSH.  The microSD card is enabled as
+well and, because ``CONFIG_MMCSD_MMCSUPPORT`` is disabled, an SD card is probed
+correctly (not as an MMC device) and registered as ``/dev/mmcsd0``.
+
+**Build and flash:**
+
+.. code-block:: console
+
+   $ ./tools/configure.sh linum-stm32h753bi:lvglterm_kbda
+   $ make -j
+
+Flash the resulting ``nuttx.bin`` to the board.
+
+**How to test:** plug a USB HID keyboard and an SD card, reset the board and
+check that both devices are present::
+
+  nsh> ls /dev
+  /dev:
+   console
+   fb0
+   kbda
+   mmcsd0
+   null
+   rtc0
+   ttyS0
+   zero
+
+Start the terminal and type on the USB keyboard; the command line and its
+output appear on the display, and the Up/Down cursor keys scroll it::
+
+  nsh> lvglterm
+
+The SD card can be mounted and read while the keyboard is in use, confirming
+that the USB host and the SDMMC peripheral coexist::
+
+  nsh> mount -t vfat /dev/mmcsd0 /data
+  nsh> ls /data
 
 tone
 ----

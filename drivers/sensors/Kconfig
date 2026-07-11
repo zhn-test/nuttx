@@ -617,6 +617,12 @@ config BME680_I2C_FREQUENCY
 	int "BME680 I2C frequency"
 	default 400000
 
+config BME680_DISABLE_TEMP_MEAS
+	bool "Disable Temperature Measurement"
+	default n
+	---help---
+		If enabled, the sensor will not measure temperature.
+
 config BME680_DISABLE_PRESS_MEAS
 	bool "Disable Pressure Measurement"
 	default n
@@ -1526,6 +1532,13 @@ config MPU60X0_ACCEL_AFS_SEL
 				3 -> ± 16 g
 
 endif # SENSORS_MPU60X0
+
+config SENSORS_MPU6050
+	bool "Invensense MPU6050 Sensor support"
+	default n
+	depends on I2C
+	---help---
+		Enable uORB driver support for Invensense MPU6050 6-axis MotionTracker device over I2C.
 
 config SENSORS_MPU9250
 	bool "Invensense MPU9250 Sensor support"

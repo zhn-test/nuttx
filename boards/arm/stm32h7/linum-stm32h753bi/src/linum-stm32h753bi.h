@@ -86,7 +86,7 @@
  * PD7  Enable power supply SD Card pin
  */
 
-#if defined(CONFIG_STM32H7_SDMMC1)
+#if defined(CONFIG_STM32_SDMMC1)
 #  define HAVE_SDIO
 #endif
 
@@ -162,7 +162,7 @@ int stm32_bringup(void);
  *
  ****************************************************************************/
 
-#ifdef CONFIG_STM32H7_OTGFS
+#ifdef CONFIG_STM32_OTGFS
 void weak_function stm32_usbinitialize(void);
 #endif
 
@@ -225,7 +225,7 @@ int stm32_pwm_setup(void);
  *
  ****************************************************************************/
 
-#ifdef CONFIG_STM32H7_SPI
+#ifdef CONFIG_STM32_SPI
 void stm32_spidev_initialize(void);
 #endif
 
@@ -303,6 +303,24 @@ int board_tone_initialize(int devno);
 
 #ifdef CONFIG_INPUT_FT5X06
 int stm32_tsc_setup(int minor);
+#endif
+
+/****************************************************************************
+ * Name: stm32_usbhost_initialize
+ *
+ * Description:
+ *   Called at application startup time to initialize the USB host
+ *   functionality.  This function will start a thread that will monitor for
+ *   device connection/disconnection events.
+ *
+ * Returned Value:
+ *   Zero is returned on success.  Otherwise, a negated errno value is
+ *   returned to indicate the nature of the failure.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_USBHOST
+int stm32_usbhost_initialize(void);
 #endif
 
 #endif /* __BOARDS_ARM_STM32H7_LINUM_STM32H753BI_SRC_LINUM_STM32H753BI_H */
