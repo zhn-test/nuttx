@@ -1,0 +1,178 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Posts / updates a comment on a PR that declared cross-repo "depends-on:"
+# dependencies (listing the linked PR(s) + CI run URL), or reports that the
+# depends-on declaration could not be parsed.
+#
+# Runs via workflow_run AFTER the read-only "Build" workflow completes, because
+# commenting needs write permissions not available to the fork-safe "Build"
+# run.  It never checks out or executes any PR (fork) code; it only downloads
+# the "depends-on-report" artifact as UNTRUSTED data and:
+#   * validates the reported PR against the trusted workflow_run head_sha
+#     (guards against commenting on someone else's PR); and
+#   * re-validates the report schema / dependency values itself (guards against
+#     bot-comment injection via a poisoned artifact on the author's own PR).
+#
+# NOTE: workflow_run only triggers from the copy of this file on the
+# repository's DEFAULT branch.  To test on a fork, commit this file to the
+# fork's default branch first.
+
+name: Depends-On Comment
+
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+
+permissions:
+  actions: read          # download an artifact from the triggering run
+  pull-requests: read    # look up the PR to validate head_sha
+  issues: write          # create/update the PR comment
+
+# Allow-list used to independently validate the (untrusted) artifact.
+# Keep in sync with build.yml (fork: zhn-test/*, upstream: apache/*).
+env:
+  NUTTX_REPO: zhn-test/nuttx
+  APPS_REPO: zhn-test/nuttx-apps
+
+jobs:
+  comment:
+    # Build also runs on push (release branches / tags); only comment for PRs.
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download depends-on report
+        id: dl
+        uses: actions/download-artifact@v8
+        with:
+          name: depends-on-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: report
+        continue-on-error: true
+
+      - name: Comment on the PR
+        if: ${{ steps.dl.outcome == 'success' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const allow = [process.env.NUTTX_REPO, process.env.APPS_REPO].filter(Boolean);
+
+            // --- read the (untrusted) report artifact ---
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync('report/result.json', 'utf8'));
+            } catch (e) {
+              core.info('No valid depends-on report; nothing to comment.');
+              return;
+            }
+
+            // --- re-validate the schema here; do NOT trust the Build-side
+            // parser blindly (the artifact may be produced by fork code). ---
+            if (report.version !== 1) {
+              core.info('Unexpected report version; skipping.');
+              return;
+            }
+            const status = report.status;
+            if (status !== 'ok' && status !== 'invalid') {
+              core.info(`Report status='${status}'; nothing to comment.`);
+              return;
+            }
+
+            // Independently validate each dependency (allow-list + safe int).
+            const isSafeNumber = (n) => Number.isInteger(n) && n > 0 && n < 10000000;
+            const deps = (Array.isArray(report.dependencies) ? report.dependencies : [])
+              .filter((d) => d && typeof d.repo === 'string'
+                && allow.includes(d.repo) && isSafeNumber(d.number));
+
+            // --- trust boundary: validate the reported PR number against the
+            // workflow_run head_sha (set by GitHub, unforgeable by the PR). ---
+            const headSha = context.payload.workflow_run.head_sha;
+            const claimed = Number(report.pr_number);
+
+            async function headMatches(prNum) {
+              if (!Number.isInteger(prNum)) return false;
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner, repo, pull_number: prNum });
+                return pr.head.sha === headSha;
+              } catch (e) {
+                return false;
+              }
+            }
+
+            let prNum = null;
+            if (await headMatches(claimed)) {
+              prNum = claimed;
+            } else {
+              const { data: assoc } =
+                await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner, repo, commit_sha: headSha });
+              const match = assoc.find((p) => p.number === claimed);
+              if (match) prNum = match.number;
+            }
+            if (prNum === null) {
+              core.setFailed(
+                'Could not validate the target PR against workflow_run head_sha ' +
+                '(possible artifact poisoning); skipping comment.');
+              return;
+            }
+
+            // --- build the comment from validated / structured fields only ---
+            const marker = '<!-- nuttx-depends-on-bot -->';
+            const runUrl = context.payload.workflow_run.html_url;
+            let body;
+            if (status === 'ok') {
+              if (deps.length === 0) {
+                core.info('status=ok but no valid dependencies after validation; skipping.');
+                return;
+              }
+              const list = deps
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .join('\n');
+              body =
+                `${marker}\n` +
+                `### 🔗 Cross-repo PR dependencies\n\n` +
+                `This PR's CI was built together with the following dependent PR(s):\n\n` +
+                `${list}\n\n` +
+                `CI run: ${runUrl}`;
+            } else {
+              // invalid: fixed copy only; never echo untrusted artifact text.
+              const example = `depends-on: [${allow[0] || 'owner/repo'}/pull/<N> ` +
+                `${allow[1] || 'owner/repo'}/pull/<M>]`;
+              body =
+                `${marker}\n` +
+                `### ⚠️ \`depends-on\` could not be parsed\n\n` +
+                `A \`depends-on:\` line was found in the PR description, but no ` +
+                `valid dependency was parsed. Supported repositories: ` +
+                `\`${allow.join('`, `')}\`; the PR id must be numeric.\n\n` +
+                `Expected format:\n\n\`\`\`\n${example}\n\`\`\`\n\n` +
+                `CI run: ${runUrl}`;
+            }
+
+            // --- upsert a single bot comment (identified by the marker) ---
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number: prNum });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body });
+              core.info(`Updated comment on PR #${prNum}.`);
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNum, body });
+              core.info(`Created comment on PR #${prNum}.`);
+            }
