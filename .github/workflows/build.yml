@@ -93,6 +93,8 @@ jobs:
           OLD_BODY: ${{ github.event.changes.body.from }}
           # "null" when the body was NOT part of this edit (title/base only).
           BODY_CHANGE: ${{ toJSON(github.event.changes.body) }}
+          # "null" when the base branch was NOT changed by this edit.
+          BASE_CHANGE: ${{ toJSON(github.event.changes.base) }}
         run: |
           set -euo pipefail
 
@@ -104,6 +106,13 @@ jobs:
           fi
 
           # Edited but the body was not part of this edit (title/base only).
+          # A base-branch change (e.g. releases/* -> master) changes whether
+          # depends-on applies, so re-run CI in that case.
+          if [ "$BASE_CHANGE" != "null" ]; then
+            echo "::notice::PR base branch changed; running CI."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$BODY_CHANGE" = "null" ]; then
             echo "::notice::PR edited but body unchanged; no code/dependency change, skipping CI."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -303,16 +312,14 @@ jobs:
             fi
           done < <(python3 -c 'import json; d = json.load(open("depends-on-report/result.json")); [print("%s\t%d" % (x["repo"], x["number"])) for x in d["dependencies"]]')
 
-      # Upload the depends-on report (written by the parser in the "Determine
-      # Target Branches" step) whenever a depends-on declaration was present,
-      # so the comment workflow can report BOTH success and invalid-format
-      # cases.  Uploaded even on failure so the linkage/error is still sent.
-      # Note: an Apply failure only happens when parsing produced valid deps
-      # (step output status='ok'); mark_failed rewrites the report FILE to
-      # status='failed', but the step output stays 'ok', so this guard still
-      # matches and always() ensures the (failed) report is uploaded.
+      # Upload whenever the parser ran (status ok/invalid/none), so the comment
+      # workflow can post/update AND clear a stale comment when depends-on is
+      # removed (status=none).  Note: an Apply failure only happens when parsing
+      # produced valid deps (step output stays 'ok'); mark_failed rewrites the
+      # report FILE to status='failed', and always() ensures it is still
+      # uploaded.
       - name: Upload depends-on report
-        if: ${{ always() && (steps.gittargets.outputs.status == 'ok' || steps.gittargets.outputs.status == 'invalid') }}
+        if: ${{ always() && steps.gittargets.outputs.status != '' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: depends-on-report
