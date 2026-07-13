@@ -36,8 +36,10 @@ on:
 
 permissions:
   actions: read          # download an artifact from the triggering run
-  pull-requests: read    # look up the PR to validate head_sha
-  issues: write          # create/update the PR comment
+  # Commenting on a *pull request* requires pull-requests:write (issues:write
+  # only covers comments on issues).  pull-requests:write also covers the read
+  # needed for head_sha validation.
+  pull-requests: write
 
 # Allow-list used to independently validate the (untrusted) artifact.
 # Keep in sync with build.yml (fork: zhn-test/*, upstream: apache/*).
