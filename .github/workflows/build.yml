@@ -234,57 +234,71 @@ jobs:
         if: ${{ steps.gittargets.outputs.depends_on != '' }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           git config --global user.email "actions@github.com"
           git config --global user.name "github-actions"
 
-          # Read the structured dependency list from the parser's report
-          # (single JSON format; no space-separated string / awk parsing).
+          # On any failure to apply a dependency, mark the report status as
+          # "failed" (with a reason) so the comment workflow reports "could not
+          # be applied" instead of "built together".
+          mark_failed() {
+          python3 - "$1" "$2" <<'PY'
+          import json, sys
+          p = "depends-on-report/result.json"
+          try:
+              d = json.load(open(p))
+          except Exception:
+              d = {"version": 1, "pr_number": None, "head_sha": None, "dependencies": [], "warnings": []}
+          d["status"] = "failed"
+          d["error"] = ("could not apply %s: %s" % (sys.argv[1], sys.argv[2])).strip()
+          open(p, "w").write(json.dumps(d))
+          PY
+          }
+
           while IFS=$'\t' read -r DEP_REPO DEP_PR_NUM; do
             [ -n "$DEP_REPO" ] || continue
+            DEP="${DEP_REPO}/pull/${DEP_PR_NUM}"
 
             case "$DEP_REPO" in
-              "$NUTTX_REPO")
-                REPO_PATH="sources/nuttx"
-                ;;
-              "$APPS_REPO")
-                REPO_PATH="sources/apps"
-                ;;
+              "$NUTTX_REPO") REPO_PATH="sources/nuttx" ;;
+              "$APPS_REPO")  REPO_PATH="sources/apps" ;;
               *)
                 echo "::error::Unsupported dependency repo: $DEP_REPO"
-                exit 1
-                ;;
+                mark_failed "$DEP" "unsupported repo"; exit 1 ;;
             esac
 
-            echo "Applying dependency ${DEP_REPO}/pull/${DEP_PR_NUM}"
+            echo "Applying dependency ${DEP}"
             if [ -f "$REPO_PATH/.git/shallow" ]; then
-              git -C "$REPO_PATH" fetch --unshallow origin
+              git -C "$REPO_PATH" fetch --unshallow origin || true
             fi
-            git -C "$REPO_PATH" fetch origin "pull/${DEP_PR_NUM}/head:dep-${DEP_PR_NUM}"
+            if ! git -C "$REPO_PATH" fetch origin "pull/${DEP_PR_NUM}/head:dep-${DEP_PR_NUM}"; then
+              echo "::error::Could not fetch ${DEP} (the PR may not exist)."
+              mark_failed "$DEP" "fetch failed / PR not found"; exit 1
+            fi
 
             COMMON_BASE=$(git -C "$REPO_PATH" merge-base "dep-${DEP_PR_NUM}" HEAD || true)
             if [ -z "$COMMON_BASE" ]; then
-              echo "::error::Could not find common base for ${DEP_REPO}/pull/${DEP_PR_NUM}"
-              exit 1
+              echo "::error::Could not find common base for ${DEP}"
+              mark_failed "$DEP" "no common base"; exit 1
             fi
 
             COMMITS=$(git -C "$REPO_PATH" rev-list --reverse "HEAD..dep-${DEP_PR_NUM}") || {
-              echo "::error::Could not list commits for ${DEP_REPO}/pull/${DEP_PR_NUM}"
-              exit 1
+              echo "::error::Could not list commits for ${DEP}"
+              mark_failed "$DEP" "rev-list failed"; exit 1
             }
 
             if [ -z "$COMMITS" ]; then
-              echo "Dependency ${DEP_REPO}/pull/${DEP_PR_NUM} is already included"
+              echo "Dependency ${DEP} is already included"
               continue
             fi
 
             # shellcheck disable=SC2086
             if ! git -C "$REPO_PATH" cherry-pick $COMMITS; then
-              echo "::error::cherry-pick failed for ${DEP_REPO}/pull/${DEP_PR_NUM}."
+              echo "::error::cherry-pick failed for ${DEP}."
               echo "::error::If your PR contains merge commits, please rebase instead of merge."
               git -C "$REPO_PATH" cherry-pick --abort || true
-              exit 1
+              mark_failed "$DEP" "cherry-pick conflict"; exit 1
             fi
           done < <(python3 -c 'import json; d = json.load(open("depends-on-report/result.json")); [print("%s\t%d" % (x["repo"], x["number"])) for x in d["dependencies"]]')
 
