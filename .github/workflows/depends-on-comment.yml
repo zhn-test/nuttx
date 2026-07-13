@@ -36,8 +36,10 @@ on:
 
 permissions:
   actions: read          # download an artifact from the triggering run
-  pull-requests: read    # look up the PR to validate head_sha
-  issues: write          # create/update the PR comment
+  # Commenting on a *pull request* requires pull-requests:write (issues:write
+  # only covers comments on issues).  pull-requests:write also covers the read
+  # needed for head_sha validation.
+  pull-requests: write
 
 # Allow-list used to independently validate the (untrusted) artifact.
 # Keep in sync with build.yml (fork: zhn-test/*, upstream: apache/*).
@@ -87,13 +89,17 @@ jobs:
               return;
             }
             const status = report.status;
-            if (status !== 'ok' && status !== 'invalid') {
+            if (status !== 'ok' && status !== 'invalid' && status !== 'failed' && status !== 'none') {
               core.info(`Report status='${status}'; nothing to comment.`);
               return;
             }
 
             // Independently validate each dependency (allow-list + safe int).
-            const isSafeNumber = (n) => Number.isInteger(n) && n > 0 && n < 10000000;
+            // GitHub PR numbers are a per-repo sequential counter starting at 1
+            // (shared with issues/discussions), with no documented upper bound.
+            // Validate as a positive safe integer (upper bound is only JS float
+            // safety, not a GitHub limit).
+            const isSafeNumber = (n) => Number.isSafeInteger(n) && n > 0;
             const deps = (Array.isArray(report.dependencies) ? report.dependencies : [])
               .filter((d) => d && typeof d.repo === 'string'
                 && allow.includes(d.repo) && isSafeNumber(d.number));
@@ -104,7 +110,7 @@ jobs:
             const claimed = Number(report.pr_number);
 
             async function headMatches(prNum) {
-              if (!Number.isInteger(prNum)) return false;
+              if (!Number.isSafeInteger(prNum) || prNum <= 0) return false;
               try {
                 const { data: pr } = await github.rest.pulls.get({
                   owner, repo, pull_number: prNum });
@@ -134,6 +140,22 @@ jobs:
             // --- build the comment from validated / structured fields only ---
             const marker = '<!-- nuttx-depends-on-bot -->';
             const runUrl = context.payload.workflow_run.html_url;
+            // depends-on removed (or never declared): clear any stale bot
+            // comment so it doesn't linger as misleading information.
+            if (status === 'none') {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner, repo, issue_number: prNum });
+              const stale = comments.find((c) => c.body && c.body.includes(marker));
+              if (stale) {
+                await github.rest.issues.deleteComment({
+                  owner, repo, comment_id: stale.id });
+                core.info(`Removed stale depends-on comment on PR #${prNum}.`);
+              } else {
+                core.info('No depends-on and no existing comment; nothing to do.');
+              }
+              return;
+            }
+
             let body;
             if (status === 'ok') {
               if (deps.length === 0) {
@@ -148,6 +170,35 @@ jobs:
                 `### 🔗 Cross-repo PR dependencies\n\n` +
                 `This PR's CI was built together with the following dependent PR(s):\n\n` +
                 `${list}\n\n` +
+                `CI run: ${runUrl}`;
+            } else if (status === 'failed') {
+              // Dependencies were declared and valid, but could not be applied
+              // (fetch/cherry-pick failed), so CI did not build the combined code.
+              if (deps.length === 0) {
+                core.info('status=failed but no valid dependencies after validation; skipping.');
+                return;
+              }
+              const list = deps
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .join('\n');
+              // Map a structured error code (allow-list) to fixed copy; never
+              // render untrusted free text from the artifact.
+              const REASONS = {
+                fetch_failed: 'the dependency PR could not be fetched (it may not exist)',
+                no_common_base: 'no common base with the dependency PR',
+                rev_list_failed: 'could not determine the dependency commits',
+                cherry_pick_conflict: 'cherry-pick failed (if your PR has merge commits, rebase instead)',
+                unsupported_repo: 'the dependency repository is not supported',
+              };
+              const code = typeof report.error_code === 'string' ? report.error_code : '';
+              const reason = REASONS[code] ? `\n\nReason: ${REASONS[code]}` : '';
+              body =
+                `${marker}\n` +
+                `### ❌ Cross-repo dependency could not be applied\n\n` +
+                `The declared dependency PR(s) could not be merged into this ` +
+                `build (fetch or cherry-pick failed), so CI did **not** run ` +
+                `against the combined code:\n\n` +
+                `${list}${reason}\n\n` +
                 `CI run: ${runUrl}`;
             } else {
               // invalid: fixed copy only; never echo untrusted artifact text.
