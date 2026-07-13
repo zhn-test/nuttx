@@ -89,13 +89,17 @@ jobs:
               return;
             }
             const status = report.status;
-            if (status !== 'ok' && status !== 'invalid') {
+            if (status !== 'ok' && status !== 'invalid' && status !== 'failed') {
               core.info(`Report status='${status}'; nothing to comment.`);
               return;
             }
 
             // Independently validate each dependency (allow-list + safe int).
-            const isSafeNumber = (n) => Number.isInteger(n) && n > 0 && n < 10000000;
+            // GitHub PR numbers are a per-repo sequential counter starting at 1
+            // (shared with issues/discussions), with no documented upper bound.
+            // Validate as a positive safe integer (upper bound is only JS float
+            // safety, not a GitHub limit).
+            const isSafeNumber = (n) => Number.isSafeInteger(n) && n > 0;
             const deps = (Array.isArray(report.dependencies) ? report.dependencies : [])
               .filter((d) => d && typeof d.repo === 'string'
                 && allow.includes(d.repo) && isSafeNumber(d.number));
@@ -150,6 +154,22 @@ jobs:
                 `### 🔗 Cross-repo PR dependencies\n\n` +
                 `This PR's CI was built together with the following dependent PR(s):\n\n` +
                 `${list}\n\n` +
+                `CI run: ${runUrl}`;
+            } else if (status === 'failed') {
+              // Dependencies were declared and valid, but could not be applied
+              // (fetch/cherry-pick failed), so CI did not build the combined code.
+              const list = deps
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .join('\n');
+              const reason = typeof report.error === 'string' && report.error
+                ? `\n\nReason: ${report.error}` : '';
+              body =
+                `${marker}\n` +
+                `### ❌ Cross-repo dependency could not be applied\n\n` +
+                `The declared dependency PR(s) could not be merged into this ` +
+                `build (fetch or cherry-pick failed), so CI did **not** run ` +
+                `against the combined code:\n\n` +
+                `${list}${reason}\n\n` +
                 `CI run: ${runUrl}`;
             } else {
               // invalid: fixed copy only; never echo untrusted artifact text.
