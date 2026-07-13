@@ -110,7 +110,7 @@ jobs:
             const claimed = Number(report.pr_number);
 
             async function headMatches(prNum) {
-              if (!Number.isInteger(prNum)) return false;
+              if (!Number.isSafeInteger(prNum) || prNum <= 0) return false;
               try {
                 const { data: pr } = await github.rest.pulls.get({
                   owner, repo, pull_number: prNum });
@@ -158,11 +158,24 @@ jobs:
             } else if (status === 'failed') {
               // Dependencies were declared and valid, but could not be applied
               // (fetch/cherry-pick failed), so CI did not build the combined code.
+              if (deps.length === 0) {
+                core.info('status=failed but no valid dependencies after validation; skipping.');
+                return;
+              }
               const list = deps
                 .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
                 .join('\n');
-              const reason = typeof report.error === 'string' && report.error
-                ? `\n\nReason: ${report.error}` : '';
+              // Map a structured error code (allow-list) to fixed copy; never
+              // render untrusted free text from the artifact.
+              const REASONS = {
+                fetch_failed: 'the dependency PR could not be fetched (it may not exist)',
+                no_common_base: 'no common base with the dependency PR',
+                rev_list_failed: 'could not determine the dependency commits',
+                cherry_pick_conflict: 'cherry-pick failed (if your PR has merge commits, rebase instead)',
+                unsupported_repo: 'the dependency repository is not supported',
+              };
+              const code = typeof report.error_code === 'string' ? report.error_code : '';
+              const reason = REASONS[code] ? `\n\nReason: ${REASONS[code]}` : '';
               body =
                 `${marker}\n` +
                 `### ❌ Cross-repo dependency could not be applied\n\n` +
