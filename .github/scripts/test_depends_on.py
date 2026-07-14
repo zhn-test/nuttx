@@ -108,6 +108,13 @@ class F1LineAnchorTest(unittest.TestCase):
         self.assertFalse(has_declaration(body))
         self.assertEqual(parse_dependencies(body, ALLOWED), ([], []))
 
+    def test_indented_fence_is_not_a_fence(self):
+        # A ``` indented by 4+ spaces is NOT a fence opener (CommonMark), so the
+        # following column-0 depends-on: must still be parsed.
+        body = "    ```\ndepends-on: %s/pull/1\n    ```" % APPS_REPO
+        d, _ = parse_dependencies(body, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 1)])
+
     def test_real_after_prose_still_parsed(self):
         body = "See docs.\ndepends-on: %s/pull/9\nthanks" % APPS_REPO
         d, _ = parse_dependencies(body, ALLOWED)

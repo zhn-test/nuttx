@@ -67,8 +67,10 @@ _TOKEN_RE = re.compile(
 # avoids matching mid-line prose, quotes, or "not-depends-on:".
 _MARKER_RE = re.compile(r"^ {0,3}depends-on:[ \t]*(?P<rest>.*)$", re.IGNORECASE)
 
-# Markdown fenced code block toggle.
-_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+# Markdown fenced code block toggle.  Per CommonMark a fence opener may be
+# indented at most 3 spaces (4+ spaces or a tab would be an indented code
+# block), so keep this threshold aligned with _MARKER_RE.
+_FENCE_RE = re.compile(r"^ {0,3}(?:```|~~~)")
 
 
 def allowed_repos_from_env():
