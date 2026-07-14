@@ -14,6 +14,7 @@ name: Build
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     paths-ignore:
       - "AUTHORS"
       - "CONTRIBUTING.md"
@@ -33,24 +34,137 @@ on:
 permissions:
   contents: read
 
+# Repositories used for cross-repo depends-on.  These two values are the single
+# source of truth for the fork-vs-upstream switch:
+#   Testing (fork):  zhn-test/nuttx , zhn-test/nuttx-apps
+#   Upstream:        apache/nuttx  , apache/nuttx-apps
+# NOTE: the reusable-workflow `uses:` refs (arch.yml@master) further below
+# CANNOT use ${{ env.* }} (a GitHub Actions limitation) and must be switched by
+# hand as well when moving between fork and upstream.
+env:
+  NUTTX_REPO: zhn-test/nuttx
+  APPS_REPO: zhn-test/nuttx-apps
+
 concurrency:
   group: build-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Gate job: decide whether the heavy CI needs to run.
+  #
+  # Normal events (opened / synchronize / reopened) always build.
+  # For 'edited' events (PR title/body/base edited), the heavy CI is only
+  # run when the depends-on declaration in the PR body was actually added,
+  # removed or modified.  Editing unrelated description text does not change
+  # any code or dependency, so CI is skipped to save runner budget.
+  Changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
+    steps:
+      # Gate parser: prefer the parser from the PR's BASE branch, so a PR
+      # cannot alter the gate logic that decides whether its own edits re-run
+      # CI.  Fall back to the PR's copy while the base branch does not yet ship
+      # depends_on.py (e.g. the PR that introduces this feature).
+      - name: Checkout base-branch CI scripts
+        if: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          path: base-ci
+        continue-on-error: true
+      - name: Checkout PR CI scripts (fallback)
+        if: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' }}
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          path: pr-ci
+      - name: Decide whether to run CI
+        id: gate
+        shell: bash
+        env:
+          ACTION: ${{ github.event.action }}
+          NEW_BODY: ${{ github.event.pull_request.body }}
+          OLD_BODY: ${{ github.event.changes.body.from }}
+          # "null" when the body was NOT part of this edit (title/base only).
+          BODY_CHANGE: ${{ toJSON(github.event.changes.body) }}
+          # "null" when the base branch was NOT changed by this edit.
+          BASE_CHANGE: ${{ toJSON(github.event.changes.base) }}
+        run: |
+          set -euo pipefail
+
+          # Non-edit events (opened / synchronize / reopened) always build.
+          if [ "${ACTION:-}" != "edited" ]; then
+            echo "Event '${ACTION:-push}': running CI."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Edited but the body was not part of this edit (title/base only).
+          # A base-branch change (e.g. releases/* -> master) changes whether
+          # depends-on applies, so re-run CI in that case.
+          if [ "$BASE_CHANGE" != "null" ]; then
+            echo "::notice::PR base branch changed; running CI."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$BODY_CHANGE" = "null" ]; then
+            echo "::notice::PR edited but body unchanged; no code/dependency change, skipping CI."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Prefer the trusted base-branch parser; fall back to the PR copy
+          # while the base branch does not yet contain it (bootstrap).
+          PARSER="pr-ci/.github/scripts/depends_on.py"
+          if [ -f "base-ci/.github/scripts/depends_on.py" ]; then
+            PARSER="base-ci/.github/scripts/depends_on.py"
+            echo "Using base-branch parser for the gate."
+          else
+            echo "::notice::Base branch has no depends_on.py yet; using PR parser for the gate (bootstrap)."
+          fi
+
+          # Compare the full parsed STATE (status + dependencies) before/after
+          # the edit, so adding / removing / fixing a valid *or invalid*
+          # depends-on all re-run CI (and (re)produce the report/comment).
+          NEW_STATE="$(PR_BODY="$NEW_BODY" python3 "$PARSER" --print-state)"
+          OLD_STATE="$(PR_BODY="$OLD_BODY" python3 "$PARSER" --print-state)"
+          if [ "$NEW_STATE" != "$OLD_STATE" ]; then
+            echo "depends-on state changed; running CI."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No depends-on change on this edit; no code change, skipping CI."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Fetch the source from nuttx and nuttx-apps repos
   Fetch-Source:
+    needs: Changes
+    if: ${{ needs.Changes.outputs.should_build == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
       - name: Determine Target Branches
         id: gittargets
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPORT_PATH: depends-on-report/result.json
         run: |
           OS_REF=""
           APPS_REF=""
-          DEPENDS_ON=""
 
           REF=$GITHUB_REF
 
@@ -76,13 +190,13 @@ jobs:
             # Determine the repo and leave that unset to use the normal checkout behavior
             # of using the merge commit instead of HEAD
             case $GITHUB_REPOSITORY in
-              "zhn-test/nuttx")
+              "$NUTTX_REPO")
                 # OS
                 echo "Triggered by change in OS"
                 APPS_REF=$REF_NAME
                 ;;
 
-              "zhn-test/nuttx-apps" )
+              "$APPS_REPO" )
                 # APPS
                 OS_REF=$REF_NAME
                 echo "Triggered by change in APPS"
@@ -94,48 +208,23 @@ jobs:
             esac
           fi
 
-          # Parse PR dependencies from PR body
-          # Format: depends-on: [apache/nuttx-apps/pull/1234 https://github.com/apache/nuttx/pull/5678]
-          # Only processed for PRs targeting master. Release-branch / back-port
-          # PRs ignore depends-on and build against the matching release branch.
+          # Parse PR dependencies from the PR body with a shared, unit-tested
+          # Python parser (.github/scripts/depends_on.py) instead of ad-hoc
+          # awk/sed.  Only processed for PRs targeting master; release-branch /
+          # back-port PRs ignore depends-on and build against the matching
+          # release branch.  The script appends "depends_on=..." to
+          # $GITHUB_OUTPUT and emits ::warning:: annotations for invalid input.
           if [ -n "$PR_BODY" ] && [ "$GITHUB_BASE_REF" = "master" ]; then
-            ARRAY_DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*\[[^]]+\]' | head -1) || true
-            if [ -n "$ARRAY_DEPS" ]; then
-              DEPS=$(echo "$ARRAY_DEPS" | grep -oE '(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+') || true
-            else
-              DEPS=$(echo "$PR_BODY" | grep -oE 'depends-on:[[:space:]]*(https://github.com/)?zhn-test/nuttx(-apps)?/pull/[0-9]+' | sed 's/depends-on:[[:space:]]*//' | head -1) || true
-            fi
-
-            for DEP in $DEPS; do
-              DEP=$(echo "$DEP" | sed 's|https://github.com/||')
-              DEP_REPO=$(echo "$DEP" | awk -F'/pull/' '{print $1}')
-              DEP_PR_NUM=$(echo "$DEP" | awk -F'/pull/' '{print $2}')
-
-              if [[ "$DEP_REPO" != "zhn-test/nuttx" && "$DEP_REPO" != "zhn-test/nuttx-apps" ]]; then
-                echo "::warning::Ignoring unsupported dependency repo: $DEP_REPO"
-                continue
-              fi
-
-              DEPENDS_ON="$DEPENDS_ON ${DEP_REPO}/pull/${DEP_PR_NUM}"
-            done
-
-            DEPENDS_ON=$(echo "$DEPENDS_ON" | tr ' ' '\n' | awk 'NF && !a[$0]++' | xargs)
-
-            # Warn if a depends-on line is present but nothing valid was parsed
-            # (e.g. wrong repo, or a typo such as "push" instead of "pull").
-            if echo "$PR_BODY" | grep -qiE 'depends-on:' && [ -z "$DEPENDS_ON" ]; then
-              echo "::warning::Found a 'depends-on:' line but parsed no valid dependency. Expected: depends-on: [apache/nuttx/pull/<N> apache/nuttx-apps/pull/<M>]"
-            fi
+            python3 .github/scripts/depends_on.py --github-output
           fi
 
           echo "os_ref=$OS_REF" >> $GITHUB_OUTPUT
           echo "apps_ref=$APPS_REF" >> $GITHUB_OUTPUT
-          echo "depends_on=$DEPENDS_ON" >> $GITHUB_OUTPUT
 
       - name: Checkout nuttx repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          repository: zhn-test/nuttx
+          repository: ${{ env.NUTTX_REPO }}
           ref: ${{ steps.gittargets.outputs.os_ref }}
           path: sources/nuttx
           fetch-depth: 1
@@ -143,9 +232,9 @@ jobs:
         run: git -C sources/nuttx fetch --tags
 
       - name: Checkout apps repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          repository: zhn-test/nuttx-apps
+          repository: ${{ env.APPS_REPO }}
           ref: ${{ steps.gittargets.outputs.apps_ref }}
           path: sources/apps
           fetch-depth: 1
@@ -153,61 +242,88 @@ jobs:
       - name: Apply depends-on PRs
         if: ${{ steps.gittargets.outputs.depends_on != '' }}
         shell: bash
-        env:
-          DEPENDS_ON: ${{ steps.gittargets.outputs.depends_on }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           git config --global user.email "actions@github.com"
           git config --global user.name "github-actions"
 
-          for DEPENDENCY in $DEPENDS_ON; do
-            DEP_REPO=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $1}')
-            DEP_PR_NUM=$(echo "$DEPENDENCY" | awk -F'/pull/' '{print $2}')
+          # Mark the report as failed with a STRUCTURED error code (an enum,
+          # not free text) so the comment workflow can map it to fixed copy and
+          # never render untrusted artifact text.  $1=dep ref (for the log), $2=code.
+          mark_failed() {
+          echo "::error::could not apply $1 ($2)"
+          python3 - "$2" <<'PY'
+          import json, sys
+          p = "depends-on-report/result.json"
+          try:
+              d = json.load(open(p))
+          except Exception:
+              d = {"version": 1, "pr_number": None, "head_sha": None, "dependencies": [], "warnings": []}
+          d["status"] = "failed"
+          d["error_code"] = sys.argv[1]
+          open(p, "w").write(json.dumps(d))
+          PY
+          }
+
+          while IFS=$'\t' read -r DEP_REPO DEP_PR_NUM; do
+            [ -n "$DEP_REPO" ] || continue
+            DEP="${DEP_REPO}/pull/${DEP_PR_NUM}"
 
             case "$DEP_REPO" in
-              "zhn-test/nuttx")
-                REPO_PATH="sources/nuttx"
-                ;;
-              "zhn-test/nuttx-apps")
-                REPO_PATH="sources/apps"
-                ;;
+              "$NUTTX_REPO") REPO_PATH="sources/nuttx" ;;
+              "$APPS_REPO")  REPO_PATH="sources/apps" ;;
               *)
                 echo "::error::Unsupported dependency repo: $DEP_REPO"
-                exit 1
-                ;;
+                mark_failed "$DEP" "unsupported_repo"; exit 1 ;;
             esac
 
-            echo "Applying dependency ${DEP_REPO}/pull/${DEP_PR_NUM}"
+            echo "Applying dependency ${DEP}"
             if [ -f "$REPO_PATH/.git/shallow" ]; then
-              git -C "$REPO_PATH" fetch --unshallow origin
+              git -C "$REPO_PATH" fetch --unshallow origin || true
             fi
-            git -C "$REPO_PATH" fetch origin "pull/${DEP_PR_NUM}/head:dep-${DEP_PR_NUM}"
+            if ! git -C "$REPO_PATH" fetch origin "pull/${DEP_PR_NUM}/head:dep-${DEP_PR_NUM}"; then
+              echo "::error::Could not fetch ${DEP} (the PR may not exist)."
+              mark_failed "$DEP" "fetch_failed"; exit 1
+            fi
 
             COMMON_BASE=$(git -C "$REPO_PATH" merge-base "dep-${DEP_PR_NUM}" HEAD || true)
             if [ -z "$COMMON_BASE" ]; then
-              echo "::error::Could not find common base for ${DEP_REPO}/pull/${DEP_PR_NUM}"
-              exit 1
+              echo "::error::Could not find common base for ${DEP}"
+              mark_failed "$DEP" "no_common_base"; exit 1
             fi
 
             COMMITS=$(git -C "$REPO_PATH" rev-list --reverse "HEAD..dep-${DEP_PR_NUM}") || {
-              echo "::error::Could not list commits for ${DEP_REPO}/pull/${DEP_PR_NUM}"
-              exit 1
+              echo "::error::Could not list commits for ${DEP}"
+              mark_failed "$DEP" "rev_list_failed"; exit 1
             }
 
             if [ -z "$COMMITS" ]; then
-              echo "Dependency ${DEP_REPO}/pull/${DEP_PR_NUM} is already included"
+              echo "Dependency ${DEP} is already included"
               continue
             fi
 
             # shellcheck disable=SC2086
             if ! git -C "$REPO_PATH" cherry-pick $COMMITS; then
-              echo "::error::cherry-pick failed for ${DEP_REPO}/pull/${DEP_PR_NUM}."
+              echo "::error::cherry-pick failed for ${DEP}."
               echo "::error::If your PR contains merge commits, please rebase instead of merge."
               git -C "$REPO_PATH" cherry-pick --abort || true
-              exit 1
+              mark_failed "$DEP" "cherry_pick_conflict"; exit 1
             fi
-          done
+          done < <(python3 -c 'import json; d = json.load(open("depends-on-report/result.json")); [print("%s\t%d" % (x["repo"], x["number"])) for x in d["dependencies"]]')
+
+      # Upload only when a depends-on declaration was present (status
+      # ok/invalid).  status=none => no report, and existing comments are left
+      # as a historical record.  Note: an Apply failure only happens when
+      # parsing produced valid deps (step output stays 'ok'); mark_failed
+      # rewrites the report FILE to status='failed', and always() ensures it is
+      # still uploaded.
+      - name: Upload depends-on report
+        if: ${{ always() && (steps.gittargets.outputs.status == 'ok' || steps.gittargets.outputs.status == 'invalid') }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: depends-on-report
+          path: depends-on-report/
 
       - name: Tar sources
         run: tar zcf sources.tar.gz sources
@@ -242,6 +358,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: 1
+      # Documented sim/login CI test credential (not a production secret).
+      # Used when CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE=y and defconfig omits
+      # the password.  See tools/update_romfs_password.sh.
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1
 
     strategy:
       max-parallel: 12
@@ -269,7 +389,7 @@ jobs:
         run: tar zxf sources.tar.gz
 
       - name: Docker Login
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -364,7 +484,7 @@ jobs:
         run: tar zxf sources.tar.gz
 
       - name: Docker Login
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -408,6 +528,8 @@ jobs:
     runs-on: macos-15-intel
     needs: macOS-Arch
     if: ${{ needs.macOS-Arch.outputs.skip_all_builds != '1' }}
+    env:
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1
     strategy:
       max-parallel: 2
       matrix:
@@ -424,7 +546,7 @@ jobs:
 
       - name: Restore Tools Cache
         id: cache-tools
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         env:
           cache-name: ${{ runner.os }}-cache-tools
         with:
@@ -476,7 +598,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
@@ -550,7 +672,7 @@ jobs:
     if: ${{ needs.msvc-Arch.outputs.skip_all_builds != '1' }}
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Set up Python environment and install kconfiglib
       - name: Set up Python and install kconfiglib
         uses: actions/setup-python@v6
