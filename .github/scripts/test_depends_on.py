@@ -80,12 +80,12 @@ class NumberBoundsTest(unittest.TestCase):
     def test_leading_zero_rejected(self):
         self.assertEqual(parse_dependencies("depends-on: %s/pull/007" % APPS_REPO, ALLOWED)[0], [])
 
-    def test_max_seven_digits_ok(self):
-        d, _ = parse_dependencies("depends-on: %s/pull/1234567" % APPS_REPO, ALLOWED)
-        self.assertEqual(d, [dep(APPS_REPO, 1234567)])
+    def test_max_15_digits_ok(self):
+        d, _ = parse_dependencies("depends-on: %s/pull/123456789012345" % APPS_REPO, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 123456789012345)])
 
-    def test_eight_digits_rejected(self):
-        self.assertEqual(parse_dependencies("depends-on: %s/pull/12345678" % APPS_REPO, ALLOWED)[0], [])
+    def test_16_digits_rejected(self):
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/1234567890123456" % APPS_REPO, ALLOWED)[0], [])
 
     def test_huge_number_does_not_crash(self):
         # thousands of digits must be rejected without raising (no int() blowup)
@@ -106,6 +106,12 @@ class UnicodeLineTest(unittest.TestCase):
         self.assertEqual(d1, [dep(APPS_REPO, 1)])
         d2, _ = parse_dependencies("x\rdepends-on: %s/pull/2" % APPS_REPO, ALLOWED)
         self.assertEqual(d2, [dep(APPS_REPO, 2)])
+
+    def test_u2028_within_declaration_line_not_split(self):
+        # On a real depends-on line, a U+2028-joined pair is NOT split into two
+        # tokens (ASCII-only separators); it becomes one invalid token.
+        body = "depends-on: %s/pull/1\u2028%s/pull/2" % (APPS_REPO, APPS_REPO)
+        self.assertEqual(parse_dependencies(body, ALLOWED)[0], [])
 
 
 class F1LineAnchorTest(unittest.TestCase):

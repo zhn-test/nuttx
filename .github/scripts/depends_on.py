@@ -54,12 +54,15 @@ import sys
 # github.com URL.  owner and repo are single path segments (exactly one slash
 # between them), which rejects other hosts such as
 # gitlab.com/owner/repo/pull/n (two slashes) and bare github.com/... (no https).
-# The PR number is a positive integer with no leading zero, capped at 7 digits:
-# this matches GitHub's numbering, and bounding the length avoids a huge-digit
-# string reaching int() (Python 3.11+ raises on very long int() conversions).
+# The PR number is a positive integer with no leading zero.  The digit count is
+# bounded to 15 purely as a TECHNICAL limit (not a business cap on PR numbers):
+# any 1-15 digit value stays within JS Number.MAX_SAFE_INTEGER (9007199254740991),
+# matching the comment workflow's Number.isSafeInteger check, and bounding the
+# length prevents a huge-digit string reaching int() (Python 3.11+ raises on
+# very long int() conversions).
 _TOKEN_RE = re.compile(
     r"^(?:https://github\.com/)?"
-    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[1-9][0-9]{0,6})$"
+    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[1-9][0-9]{0,14})$"
 )
 
 # "depends-on:" declaration, anchored to the start of the line and
@@ -84,7 +87,11 @@ def allowed_repos_from_env():
 
 
 def _split_tokens(text):
-    return [t for t in re.split(r"[\s\[\],]+", text.strip()) if t]
+    # ASCII-only separators (space/tab/newline/brackets/comma).  \s would also
+    # match Unicode separators (U+2028 etc.); keeping to ASCII (like _lines)
+    # means a Unicode-separated string is treated as one (invalid) token rather
+    # than silently split into several dependencies on a single declaration line.
+    return [t for t in re.split(r"[ \t\r\n\[\],]+", text.strip()) if t]
 
 
 def _lines(body):
