@@ -97,6 +97,17 @@ class F1LineAnchorTest(unittest.TestCase):
         d, _ = parse_dependencies("   depends-on: %s/pull/5" % APPS_REPO, ALLOWED)
         self.assertEqual(d, [dep(APPS_REPO, 5)])
 
+    def test_four_space_indent_is_code_ignored(self):
+        # 4+ leading spaces = CommonMark indented code block -> ignored.
+        body = "    depends-on: %s/pull/1" % APPS_REPO
+        self.assertFalse(has_declaration(body))
+        self.assertEqual(parse_dependencies(body, ALLOWED), ([], []))
+
+    def test_tab_indent_is_code_ignored(self):
+        body = "\tdepends-on: %s/pull/1" % APPS_REPO
+        self.assertFalse(has_declaration(body))
+        self.assertEqual(parse_dependencies(body, ALLOWED), ([], []))
+
     def test_real_after_prose_still_parsed(self):
         body = "See docs.\ndepends-on: %s/pull/9\nthanks" % APPS_REPO
         d, _ = parse_dependencies(body, ALLOWED)

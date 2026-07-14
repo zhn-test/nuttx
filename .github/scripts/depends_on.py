@@ -59,10 +59,13 @@ _TOKEN_RE = re.compile(
     r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[0-9]+)$"
 )
 
-# "depends-on:" declaration, anchored to the start of the line (optional leading
-# whitespace only), case-insensitive.  Anchoring avoids matching mid-line prose,
-# quotes, or "not-depends-on:".
-_MARKER_RE = re.compile(r"^[ \t]*depends-on:[ \t]*(?P<rest>.*)$", re.IGNORECASE)
+# "depends-on:" declaration, anchored to the start of the line and
+# case-insensitive.  Only up to 3 leading spaces are allowed (no tabs): under
+# CommonMark, 4+ leading spaces (or a leading tab) start an indented code block,
+# so a deeper-indented "depends-on:" is treated as code and ignored -- matching
+# how Zuul anchors its Depends-On footer at the start of a line.  Anchoring also
+# avoids matching mid-line prose, quotes, or "not-depends-on:".
+_MARKER_RE = re.compile(r"^ {0,3}depends-on:[ \t]*(?P<rest>.*)$", re.IGNORECASE)
 
 # Markdown fenced code block toggle.
 _FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
