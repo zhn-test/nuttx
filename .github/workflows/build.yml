@@ -312,14 +312,14 @@ jobs:
             fi
           done < <(python3 -c 'import json; d = json.load(open("depends-on-report/result.json")); [print("%s\t%d" % (x["repo"], x["number"])) for x in d["dependencies"]]')
 
-      # Upload whenever the parser ran (status ok/invalid/none), so the comment
-      # workflow can post/update AND clear a stale comment when depends-on is
-      # removed (status=none).  Note: an Apply failure only happens when parsing
-      # produced valid deps (step output stays 'ok'); mark_failed rewrites the
-      # report FILE to status='failed', and always() ensures it is still
-      # uploaded.
+      # Upload only when a depends-on declaration was present (status
+      # ok/invalid).  status=none => no report, and existing comments are left
+      # as a historical record.  Note: an Apply failure only happens when
+      # parsing produced valid deps (step output stays 'ok'); mark_failed
+      # rewrites the report FILE to status='failed', and always() ensures it is
+      # still uploaded.
       - name: Upload depends-on report
-        if: ${{ always() && steps.gittargets.outputs.status != '' }}
+        if: ${{ always() && (steps.gittargets.outputs.status == 'ok' || steps.gittargets.outputs.status == 'invalid') }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: depends-on-report

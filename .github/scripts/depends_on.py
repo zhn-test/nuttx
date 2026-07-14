@@ -59,13 +59,18 @@ _TOKEN_RE = re.compile(
     r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[0-9]+)$"
 )
 
-# "depends-on:" declaration, anchored to the start of the line (optional leading
-# whitespace only), case-insensitive.  Anchoring avoids matching mid-line prose,
-# quotes, or "not-depends-on:".
-_MARKER_RE = re.compile(r"^[ \t]*depends-on:[ \t]*(?P<rest>.*)$", re.IGNORECASE)
+# "depends-on:" declaration, anchored to the start of the line and
+# case-insensitive.  Only up to 3 leading spaces are allowed (no tabs): under
+# CommonMark, 4+ leading spaces (or a leading tab) start an indented code block,
+# so a deeper-indented "depends-on:" is treated as code and ignored -- matching
+# how Zuul anchors its Depends-On footer at the start of a line.  Anchoring also
+# avoids matching mid-line prose, quotes, or "not-depends-on:".
+_MARKER_RE = re.compile(r"^ {0,3}depends-on:[ \t]*(?P<rest>.*)$", re.IGNORECASE)
 
-# Markdown fenced code block toggle.
-_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+# Markdown fenced code block toggle.  Per CommonMark a fence opener may be
+# indented at most 3 spaces (4+ spaces or a tab would be an indented code
+# block), so keep this threshold aligned with _MARKER_RE.
+_FENCE_RE = re.compile(r"^ {0,3}(?:```|~~~)")
 
 
 def allowed_repos_from_env():
@@ -224,10 +229,11 @@ def main(argv):
                 f.write("\n".join(out_lines) + "\n")
         else:
             print("\n".join(out_lines))
-        # Always write the report (including status=none) so the comment
-        # workflow can also CLEAR a stale comment when depends-on is removed.
+        # Write the report only when a depends-on declaration is present
+        # (status ok/invalid).  status=none means there is nothing to report and
+        # nothing to comment; existing (historical) comments are left untouched.
         report_path = os.environ.get("REPORT_PATH")
-        if report_path:
+        if report_path and result["status"] != "none":
             parent = os.path.dirname(report_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
