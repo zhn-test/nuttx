@@ -229,10 +229,11 @@ def main(argv):
                 f.write("\n".join(out_lines) + "\n")
         else:
             print("\n".join(out_lines))
-        # Always write the report (including status=none) so the comment
-        # workflow can also CLEAR a stale comment when depends-on is removed.
+        # Write the report only when a depends-on declaration is present
+        # (status ok/invalid).  status=none means there is nothing to report and
+        # nothing to comment; existing (historical) comments are left untouched.
         report_path = os.environ.get("REPORT_PATH")
-        if report_path:
+        if report_path and result["status"] != "none":
             parent = os.path.dirname(report_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)

@@ -89,7 +89,7 @@ jobs:
               return;
             }
             const status = report.status;
-            if (status !== 'ok' && status !== 'invalid' && status !== 'failed' && status !== 'none') {
+            if (status !== 'ok' && status !== 'invalid' && status !== 'failed') {
               core.info(`Report status='${status}'; nothing to comment.`);
               return;
             }
@@ -140,21 +140,6 @@ jobs:
             // --- build the comment from validated / structured fields only ---
             const marker = '<!-- nuttx-depends-on-bot -->';
             const runUrl = context.payload.workflow_run.html_url;
-            // depends-on removed (or never declared): clear any stale bot
-            // comment so it doesn't linger as misleading information.
-            if (status === 'none') {
-              const { data: comments } = await github.rest.issues.listComments({
-                owner, repo, issue_number: prNum });
-              const stale = comments.find((c) => c.body && c.body.includes(marker));
-              if (stale) {
-                await github.rest.issues.deleteComment({
-                  owner, repo, comment_id: stale.id });
-                core.info(`Removed stale depends-on comment on PR #${prNum}.`);
-              } else {
-                core.info('No depends-on and no existing comment; nothing to do.');
-              }
-              return;
-            }
 
             let body;
             if (status === 'ok') {
@@ -168,7 +153,8 @@ jobs:
               body =
                 `${marker}\n` +
                 `### 🔗 Cross-repo PR dependencies\n\n` +
-                `This PR's CI was built together with the following dependent PR(s):\n\n` +
+                `The CI run below built this PR together with the following ` +
+                `dependent PR(s):\n\n` +
                 `${list}\n\n` +
                 `CI run: ${runUrl}`;
             } else if (status === 'failed') {
