@@ -47,7 +47,10 @@ env:
 
 concurrency:
   group: build-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Don't let an unrelated 'edited' event (PR title/description edit) cancel a
+  # running build; only real code/ref events (synchronize/opened/reopened/push)
+  # cancel in-progress runs.  'edited' is a depends-on-gate-only trigger.
+  cancel-in-progress: ${{ github.event.action != 'edited' }}
 
 jobs:
   # Gate job: decide whether the heavy CI needs to run.

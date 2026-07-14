@@ -54,9 +54,12 @@ import sys
 # github.com URL.  owner and repo are single path segments (exactly one slash
 # between them), which rejects other hosts such as
 # gitlab.com/owner/repo/pull/n (two slashes) and bare github.com/... (no https).
+# The PR number is a positive integer with no leading zero, capped at 7 digits:
+# this matches GitHub's numbering, and bounding the length avoids a huge-digit
+# string reaching int() (Python 3.11+ raises on very long int() conversions).
 _TOKEN_RE = re.compile(
     r"^(?:https://github\.com/)?"
-    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[0-9]+)$"
+    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[1-9][0-9]{0,6})$"
 )
 
 # "depends-on:" declaration, anchored to the start of the line and
@@ -84,10 +87,21 @@ def _split_tokens(text):
     return [t for t in re.split(r"[\s\[\],]+", text.strip()) if t]
 
 
+def _lines(body):
+    """Split into lines on standard newlines only (\\n, \\r\\n, \\r).
+
+    str.splitlines() also breaks on Unicode separators (U+2028/U+2029/U+0085,
+    vertical tab, form feed) that GitHub Markdown does NOT render as line
+    breaks; relying on it could let ordinary body text be mis-read as a new
+    line-anchored 'depends-on:' declaration.
+    """
+    return (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def has_declaration(body):
     """True if the body has a line-anchored depends-on: outside code fences."""
     in_fence = False
-    for ln in (body or "").splitlines():
+    for ln in _lines(body):
         if _FENCE_RE.match(ln):
             in_fence = not in_fence
             continue
@@ -100,7 +114,7 @@ def _declared_tokens(body):
     """Yield candidate dependency tokens from every depends-on: declaration,
     skipping fenced code blocks.  Supports same-line declarations and following
     bullet / URL continuation lines."""
-    lines = (body or "").splitlines()
+    lines = _lines(body)
     n = len(lines)
     in_fence = False
     i = 0

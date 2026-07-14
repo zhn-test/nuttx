@@ -104,36 +104,29 @@ jobs:
               .filter((d) => d && typeof d.repo === 'string'
                 && allow.includes(d.repo) && isSafeNumber(d.number));
 
-            // --- trust boundary: validate the reported PR number against the
-            // workflow_run head_sha (set by GitHub, unforgeable by the PR). ---
+            // --- trust boundary: only comment when the claimed PR's CURRENT
+            // head is exactly the commit this workflow_run built.  head_sha is
+            // set by GitHub and unforgeable by the PR, so this binds the comment
+            // to the right PR AND drops stale/cancelled runs: if the PR has
+            // already moved on to a newer commit, an old (e.g. cancelled) run
+            // no longer matches and must not post an outdated comment. ---
             const headSha = context.payload.workflow_run.head_sha;
             const claimed = Number(report.pr_number);
 
-            async function headMatches(prNum) {
-              if (!Number.isSafeInteger(prNum) || prNum <= 0) return false;
+            let prNum = null;
+            if (Number.isSafeInteger(claimed) && claimed > 0) {
               try {
                 const { data: pr } = await github.rest.pulls.get({
-                  owner, repo, pull_number: prNum });
-                return pr.head.sha === headSha;
+                  owner, repo, pull_number: claimed });
+                if (pr.head.sha === headSha) prNum = claimed;
               } catch (e) {
-                return false;
+                prNum = null;
               }
             }
-
-            let prNum = null;
-            if (await headMatches(claimed)) {
-              prNum = claimed;
-            } else {
-              const { data: assoc } =
-                await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner, repo, commit_sha: headSha });
-              const match = assoc.find((p) => p.number === claimed);
-              if (match) prNum = match.number;
-            }
             if (prNum === null) {
-              core.setFailed(
-                'Could not validate the target PR against workflow_run head_sha ' +
-                '(possible artifact poisoning); skipping comment.');
+              core.info(
+                "workflow_run head_sha does not match the claimed PR's current " +
+                'head (stale/cancelled run, or artifact mismatch); skipping comment.');
               return;
             }
 

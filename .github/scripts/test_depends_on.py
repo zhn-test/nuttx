@@ -73,6 +73,41 @@ class ParseBasicsTest(unittest.TestCase):
         self.assertTrue(w)
 
 
+class NumberBoundsTest(unittest.TestCase):
+    def test_zero_rejected(self):
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/0" % APPS_REPO, ALLOWED)[0], [])
+
+    def test_leading_zero_rejected(self):
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/007" % APPS_REPO, ALLOWED)[0], [])
+
+    def test_max_seven_digits_ok(self):
+        d, _ = parse_dependencies("depends-on: %s/pull/1234567" % APPS_REPO, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 1234567)])
+
+    def test_eight_digits_rejected(self):
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/12345678" % APPS_REPO, ALLOWED)[0], [])
+
+    def test_huge_number_does_not_crash(self):
+        # thousands of digits must be rejected without raising (no int() blowup)
+        body = "depends-on: %s/pull/%s" % (APPS_REPO, "9" * 5000)
+        d, _ = parse_dependencies(body, ALLOWED)
+        self.assertEqual(d, [])
+
+
+class UnicodeLineTest(unittest.TestCase):
+    def test_u2028_not_a_new_line(self):
+        # U+2028 must NOT be treated as a line break that starts a new marker.
+        body = "intro text\u2028depends-on: %s/pull/1" % APPS_REPO
+        self.assertFalse(has_declaration(body))
+        self.assertEqual(parse_dependencies(body, ALLOWED)[0], [])
+
+    def test_crlf_and_cr_are_line_breaks(self):
+        d1, _ = parse_dependencies("x\r\ndepends-on: %s/pull/1" % APPS_REPO, ALLOWED)
+        self.assertEqual(d1, [dep(APPS_REPO, 1)])
+        d2, _ = parse_dependencies("x\rdepends-on: %s/pull/2" % APPS_REPO, ALLOWED)
+        self.assertEqual(d2, [dep(APPS_REPO, 2)])
+
+
 class F1LineAnchorTest(unittest.TestCase):
     def test_midline_prose_ignored(self):
         body = "Please see depends-on: %s/pull/13 for the example." % APPS_REPO
