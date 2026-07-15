@@ -138,6 +138,11 @@ jobs:
             const runId = context.payload.workflow_run.id;
             const marker = `<!-- nuttx-depends-on-bot run-${runId} -->`;
             const runUrl = context.payload.workflow_run.html_url;
+            // The dependency head_sha comes from the (untrusted) artifact, so
+            // only render it if it is a plausible commit SHA (hex); otherwise
+            // omit it rather than echo arbitrary text into the comment.
+            const shortSha = (s) =>
+              (typeof s === 'string' && /^[0-9a-f]{7,40}$/i.test(s)) ? ` @ ${s.slice(0, 10)}` : '';
 
             let body;
             if (status === 'ok') {
@@ -146,7 +151,7 @@ jobs:
                 return;
               }
               const list = deps
-                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}${shortSha(d.head_sha)}`)
                 .join('\n');
               body =
                 `${marker}\n` +
@@ -163,7 +168,7 @@ jobs:
                 return;
               }
               const list = deps
-                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}${shortSha(d.head_sha)}`)
                 .join('\n');
               // Map a structured error code (allow-list) to fixed copy; never
               // render untrusted free text from the artifact.
@@ -173,6 +178,7 @@ jobs:
                 rev_list_failed: 'could not determine the dependency commits',
                 cherry_pick_conflict: 'cherry-pick failed (if your PR has merge commits, rebase instead)',
                 unsupported_repo: 'the dependency repository is not supported',
+                report_parse_failed: 'the dependency report could not be read',
               };
               const code = typeof report.error_code === 'string' ? report.error_code : '';
               const reason = REASONS[code] ? `\n\nReason: ${REASONS[code]}` : '';
