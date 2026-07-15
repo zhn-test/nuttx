@@ -80,12 +80,21 @@ class NumberBoundsTest(unittest.TestCase):
     def test_leading_zero_rejected(self):
         self.assertEqual(parse_dependencies("depends-on: %s/pull/007" % APPS_REPO, ALLOWED)[0], [])
 
-    def test_max_15_digits_ok(self):
-        d, _ = parse_dependencies("depends-on: %s/pull/123456789012345" % APPS_REPO, ALLOWED)
-        self.assertEqual(d, [dep(APPS_REPO, 123456789012345)])
+    def test_16_digit_within_safe_ok(self):
+        # 16-digit but <= MAX_SAFE_INTEGER is valid (no business cap).
+        d, _ = parse_dependencies("depends-on: %s/pull/1234567890123456" % APPS_REPO, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 1234567890123456)])
 
-    def test_16_digits_rejected(self):
-        self.assertEqual(parse_dependencies("depends-on: %s/pull/1234567890123456" % APPS_REPO, ALLOWED)[0], [])
+    def test_max_safe_integer_ok(self):
+        d, _ = parse_dependencies("depends-on: %s/pull/9007199254740991" % APPS_REPO, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 9007199254740991)])
+
+    def test_above_safe_integer_rejected(self):
+        # MAX_SAFE_INTEGER + 1
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/9007199254740992" % APPS_REPO, ALLOWED)[0], [])
+
+    def test_twenty_digits_rejected(self):
+        self.assertEqual(parse_dependencies("depends-on: %s/pull/99999999999999999999" % APPS_REPO, ALLOWED)[0], [])
 
     def test_huge_number_does_not_crash(self):
         # thousands of digits must be rejected without raising (no int() blowup)

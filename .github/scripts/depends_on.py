@@ -54,15 +54,18 @@ import sys
 # github.com URL.  owner and repo are single path segments (exactly one slash
 # between them), which rejects other hosts such as
 # gitlab.com/owner/repo/pull/n (two slashes) and bare github.com/... (no https).
-# The PR number is a positive integer with no leading zero.  The digit count is
-# bounded to 15 purely as a TECHNICAL limit (not a business cap on PR numbers):
-# any 1-15 digit value stays within JS Number.MAX_SAFE_INTEGER (9007199254740991),
-# matching the comment workflow's Number.isSafeInteger check, and bounding the
-# length prevents a huge-digit string reaching int() (Python 3.11+ raises on
-# very long int() conversions).
+# The PR number is a positive integer with no leading zero.  GitHub does not
+# document a maximum PR/issue number, so we do NOT impose a business cap; the
+# only real constraint is that the comment workflow handles this value in
+# JavaScript, where integers above Number.MAX_SAFE_INTEGER (2**53-1) cannot be
+# represented exactly.  So the digit count is bounded (<=19) purely to stop a
+# huge-digit string from reaching int() (Python 3.11+ raises on very long int()
+# conversions), and the exact ceiling is enforced numerically against
+# MAX_SAFE_INTEGER (matching the comment workflow's Number.isSafeInteger check).
+_MAX_SAFE_PR_NUMBER = 9007199254740991  # 2**53 - 1 == JS Number.MAX_SAFE_INTEGER
 _TOKEN_RE = re.compile(
     r"^(?:https://github\.com/)?"
-    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[1-9][0-9]{0,14})$"
+    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<num>[1-9][0-9]{0,18})$"
 )
 
 # "depends-on:" declaration, anchored to the start of the line and
@@ -168,6 +171,8 @@ def parse_dependencies(body, allowed_repos):
             continue  # stray text on a declaration line; ignore
         repo = m.group("repo")
         num = int(m.group("num"))
+        if num > _MAX_SAFE_PR_NUMBER:
+            continue  # beyond JS safe integer; comment workflow can't handle it
         if repo not in allowed_repos:
             warnings.append("Ignoring unsupported dependency repo: " + repo)
             continue
