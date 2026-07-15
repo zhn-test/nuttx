@@ -269,6 +269,24 @@ jobs:
           PY
           }
 
+          # M3: parse the report into a validated TSV first.  If the report is
+          # missing/corrupt the parser exits non-zero and we hard-fail here,
+          # instead of a process substitution silently swallowing the failure
+          # and letting the build proceed with dependencies unapplied.
+          if ! python3 - > depends-on-report/deps.tsv <<'PY'
+          import json
+          with open("depends-on-report/result.json", encoding="utf-8") as f:
+              d = json.load(f)
+          for x in d["dependencies"]:
+              print("%s\t%d" % (x["repo"], x["number"]))
+          PY
+          then
+            echo "::error::could not read the dependency report"
+            mark_failed "depends-on" "report_parse_failed"; exit 1
+          fi
+
+          : > depends-on-report/applied.tsv   # M2: collect the fetched dep SHAs
+
           while IFS=$'\t' read -r DEP_REPO DEP_PR_NUM; do
             [ -n "$DEP_REPO" ] || continue
             DEP="${DEP_REPO}/pull/${DEP_PR_NUM}"
@@ -289,6 +307,12 @@ jobs:
               echo "::error::Could not fetch ${DEP} (the PR may not exist)."
               mark_failed "$DEP" "fetch_failed"; exit 1
             fi
+
+            # M2: record the exact dependency head SHA actually fetched, so the
+            # report/comment can pin which commit of the dependency was built
+            # (records it even when already included, before the skip below).
+            DEP_SHA=$(git -C "$REPO_PATH" rev-parse "dep-${DEP_PR_NUM}")
+            printf '%s\t%s\t%s\n' "$DEP_REPO" "$DEP_PR_NUM" "$DEP_SHA" >> depends-on-report/applied.tsv
 
             COMMON_BASE=$(git -C "$REPO_PATH" merge-base "dep-${DEP_PR_NUM}" HEAD || true)
             if [ -z "$COMMON_BASE" ]; then
@@ -313,7 +337,30 @@ jobs:
               git -C "$REPO_PATH" cherry-pick --abort || true
               mark_failed "$DEP" "cherry_pick_conflict"; exit 1
             fi
-          done < <(python3 -c 'import json; d = json.load(open("depends-on-report/result.json")); [print("%s\t%d" % (x["repo"], x["number"])) for x in d["dependencies"]]')
+          done < depends-on-report/deps.tsv
+
+          # M2: merge the recorded head SHAs back into the report so the comment
+          # workflow can show which commit of each dependency was built.
+          python3 - <<'PY'
+          import json
+          shas = {}
+          try:
+              with open("depends-on-report/applied.tsv", encoding="utf-8") as f:
+                  for line in f:
+                      p = line.rstrip("\n").split("\t")
+                      if len(p) == 3:
+                          shas[(p[0], p[1])] = p[2]
+          except FileNotFoundError:
+              pass
+          with open("depends-on-report/result.json", encoding="utf-8") as f:
+              d = json.load(f)
+          for dep in d.get("dependencies", []):
+              key = (dep.get("repo"), str(dep.get("number")))
+              if key in shas:
+                  dep["head_sha"] = shas[key]
+          with open("depends-on-report/result.json", "w", encoding="utf-8") as f:
+              json.dump(d, f)
+          PY
 
       # Upload only when a depends-on declaration was present (status
       # ok/invalid).  status=none => no report, and existing comments are left
