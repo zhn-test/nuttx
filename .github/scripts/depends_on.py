@@ -13,26 +13,32 @@
 #
 """Parse cross-repo PR dependencies from a NuttX pull request body.
 
-A PR may declare dependencies on other PRs with a ``depends-on:`` line::
+A PR may declare dependencies on other PRs with a ``depends-on:`` line.
+Each declaration is a SINGLE line; use an inline list or several
+``depends-on:`` lines for multiple dependencies (bullet lists are NOT
+supported)::
 
     depends-on: apache/nuttx-apps/pull/1234
     depends-on: [apache/nuttx-apps/pull/1 https://github.com/apache/nuttx/pull/2]
-    depends-on:
-      - apache/nuttx-apps/pull/1
-      - https://github.com/apache/nuttx/pull/2
+
+    depends-on: apache/nuttx-apps/pull/1
+    depends-on: https://github.com/apache/nuttx/pull/2
 
 Robustness rules (so documentation / quotes don't trigger false positives):
 
-* The ``depends-on:`` marker must be at the **start of a line** (optional
-  leading whitespace only).  This ignores prose like "... depends-on: ..." and
-  ``not-depends-on:``.
+* The ``depends-on:`` marker must be at the **start of a line**, with at most
+  3 leading spaces and no tab (4+ spaces or a tab is a CommonMark indented code
+  block).  This ignores prose like "... depends-on: ..." and ``not-depends-on:``.
 * Lines inside fenced code blocks (``` or ~~~) are ignored.
+* Body lines are split on standard newlines only (\n, \r\n, \r); tokens on a
+  declaration line are split on ASCII whitespace only.
 * Each dependency is matched **strictly** as ``owner/repo/pull/<n>`` (exactly
   one slash between owner and repo), optionally prefixed with
   ``https://github.com/``.  This rejects other hosts, e.g.
   ``gitlab.com/owner/repo/pull/n``.
-* Only repos in the allow-list (NUTTX_REPO / APPS_REPO) and numeric PR ids are
-  accepted.
+* The PR number is a positive integer (no leading zero) within JS
+  Number.MAX_SAFE_INTEGER.
+* Only repos in the allow-list (NUTTX_REPO / APPS_REPO) are accepted.
 
 Standard-library only and unit tested (``test_depends_on.py``).
 
