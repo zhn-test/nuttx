@@ -38,7 +38,6 @@ Standard-library only and unit tested (``test_depends_on.py``).
 
 CLI:
     python3 depends_on.py                 # print full result JSON
-    python3 depends_on.py --print-deps    # sorted "repo/pull/N" (gate)
     python3 depends_on.py --print-state   # status + sorted deps (gate)
     python3 depends_on.py --github-output # write $GITHUB_OUTPUT + $REPORT_PATH
 """
@@ -121,42 +120,21 @@ def has_declaration(body):
 
 
 def _declared_tokens(body):
-    """Yield candidate dependency tokens from every depends-on: declaration,
-    skipping fenced code blocks.  Supports same-line declarations and following
-    bullet / URL continuation lines."""
-    lines = _lines(body)
-    n = len(lines)
+    """Yield candidate dependency tokens from every line-anchored depends-on:
+    declaration, skipping fenced code blocks.  Each declaration is a SINGLE
+    line: ``depends-on: <ref>`` or ``depends-on: [<ref> <ref> ...]``.  Multiple
+    dependencies use an inline list or several ``depends-on:`` lines."""
     in_fence = False
-    i = 0
-    while i < n:
-        if _FENCE_RE.match(lines[i]):
+    for ln in _lines(body):
+        if _FENCE_RE.match(ln):
             in_fence = not in_fence
-            i += 1
             continue
         if in_fence:
-            i += 1
             continue
-        m = _MARKER_RE.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        toks = _split_tokens(m.group("rest"))
-        # Continuation: following non-blank lines whose (bullet-stripped) tokens
-        # are all valid dependency refs, until a blank/other/fence/marker line.
-        j = i + 1
-        while (j < n and lines[j].strip()
-               and not _FENCE_RE.match(lines[j])
-               and not _MARKER_RE.match(lines[j])):
-            stripped = re.sub(r"^[ \t]*[-*][ \t]*", "", lines[j].strip())
-            cont = _split_tokens(stripped)
-            if cont and all(_TOKEN_RE.match(t) for t in cont):
-                toks.extend(cont)
-                j += 1
-            else:
-                break
-        for t in toks:
-            yield t
-        i = j
+        m = _MARKER_RE.match(ln)
+        if m:
+            for t in _split_tokens(m.group("rest")):
+                yield t
 
 
 def parse_dependencies(body, allowed_repos):
@@ -184,8 +162,7 @@ def parse_dependencies(body, allowed_repos):
     if has_declaration(body) and not deps:
         warnings.append(
             "Found a 'depends-on:' line but no valid dependency was parsed. "
-            "Declare dependencies on the same line as 'depends-on:' (or on "
-            "following '- <ref>' lines), e.g. "
+            "Declare dependencies on the same line as 'depends-on:', e.g. "
             "depends-on: [{}/pull/<N> {}/pull/<M>]".format(*allowed_repos)
         )
     return deps, warnings
@@ -230,11 +207,6 @@ def main(argv):
         head_sha=os.environ.get("HEAD_SHA") or None,
     )
     refs = [dep_ref(d) for d in result["dependencies"]]
-
-    if "--print-deps" in argv:
-        for r in sorted(refs):
-            print(r)
-        return 0
 
     if "--print-state" in argv:
         print(result["status"])

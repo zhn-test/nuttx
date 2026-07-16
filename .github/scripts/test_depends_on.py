@@ -187,26 +187,33 @@ class F2HostBoundaryTest(unittest.TestCase):
         self.assertEqual(d, [])
 
 
-class F5MultilineTest(unittest.TestCase):
-    def test_bullet_list(self):
+class MultiDependencyTest(unittest.TestCase):
+    def test_multiple_depends_on_lines(self):
+        # Multiple dependencies via several depends-on: lines (no continuation).
         body = (
-            "depends-on:\n"
-            "- %s/pull/1\n"
-            "- https://github.com/%s/pull/2\n" % (APPS_REPO, OS_REPO)
+            "depends-on: %s/pull/1\n"
+            "depends-on: https://github.com/%s/pull/2\n" % (APPS_REPO, OS_REPO)
         )
         d, w = parse_dependencies(body, ALLOWED)
         self.assertEqual(d, [dep(APPS_REPO, 1), dep(OS_REPO, 2)])
         self.assertEqual(w, [])
 
-    def test_bullet_list_stops_at_blank(self):
+    def test_inline_array(self):
+        body = "depends-on: [%s/pull/1 %s/pull/2]" % (APPS_REPO, OS_REPO)
+        d, _ = parse_dependencies(body, ALLOWED)
+        self.assertEqual(d, [dep(APPS_REPO, 1), dep(OS_REPO, 2)])
+
+    def test_bullet_list_not_parsed(self):
+        # A bullet list under a bare marker is NOT a supported form: the marker
+        # line has no ref and the '- ...' lines are not declarations.
         body = (
             "depends-on:\n"
             "- %s/pull/1\n"
-            "\n"
             "- %s/pull/2\n" % (APPS_REPO, APPS_REPO)
         )
-        d, _ = parse_dependencies(body, ALLOWED)
-        self.assertEqual(d, [dep(APPS_REPO, 1)])  # second bullet after blank not consumed
+        d, w = parse_dependencies(body, ALLOWED)
+        self.assertEqual(d, [])          # nothing parsed
+        self.assertTrue(w)               # declaration present but invalid
 
 
 class BuildResultStatusTest(unittest.TestCase):
