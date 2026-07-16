@@ -36,8 +36,10 @@ on:
 
 permissions:
   actions: read          # download an artifact from the triggering run
-  pull-requests: read    # look up the PR to validate head_sha
-  issues: write          # create/update the PR comment
+  # Commenting on a *pull request* requires pull-requests:write (issues:write
+  # only covers comments on issues).  pull-requests:write also covers the read
+  # needed for head_sha validation.
+  pull-requests: write
 
 # Allow-list used to independently validate the (untrusted) artifact.
 # Keep in sync with build.yml (fork: zhn-test/*, upstream: apache/*).
@@ -87,53 +89,61 @@ jobs:
               return;
             }
             const status = report.status;
-            if (status !== 'ok' && status !== 'invalid') {
+            if (status !== 'ok' && status !== 'invalid' && status !== 'failed') {
               core.info(`Report status='${status}'; nothing to comment.`);
               return;
             }
 
             // Independently validate each dependency (allow-list + safe int).
-            const isSafeNumber = (n) => Number.isInteger(n) && n > 0 && n < 10000000;
+            // GitHub PR numbers are a per-repo sequential counter starting at 1
+            // (shared with issues/discussions), with no documented upper bound.
+            // Validate as a positive safe integer (upper bound is only JS float
+            // safety, not a GitHub limit).
+            const isSafeNumber = (n) => Number.isSafeInteger(n) && n > 0;
             const deps = (Array.isArray(report.dependencies) ? report.dependencies : [])
               .filter((d) => d && typeof d.repo === 'string'
                 && allow.includes(d.repo) && isSafeNumber(d.number));
 
-            // --- trust boundary: validate the reported PR number against the
-            // workflow_run head_sha (set by GitHub, unforgeable by the PR). ---
+            // --- trust boundary: only comment when the claimed PR's CURRENT
+            // head is exactly the commit this workflow_run built.  head_sha is
+            // set by GitHub and unforgeable by the PR, so this binds the comment
+            // to the right PR AND drops stale/cancelled runs: if the PR has
+            // already moved on to a newer commit, an old (e.g. cancelled) run
+            // no longer matches and must not post an outdated comment. ---
             const headSha = context.payload.workflow_run.head_sha;
             const claimed = Number(report.pr_number);
 
-            async function headMatches(prNum) {
-              if (!Number.isInteger(prNum)) return false;
+            let prNum = null;
+            if (Number.isSafeInteger(claimed) && claimed > 0) {
               try {
                 const { data: pr } = await github.rest.pulls.get({
-                  owner, repo, pull_number: prNum });
-                return pr.head.sha === headSha;
+                  owner, repo, pull_number: claimed });
+                if (pr.head.sha === headSha) prNum = claimed;
               } catch (e) {
-                return false;
+                prNum = null;
               }
             }
-
-            let prNum = null;
-            if (await headMatches(claimed)) {
-              prNum = claimed;
-            } else {
-              const { data: assoc } =
-                await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner, repo, commit_sha: headSha });
-              const match = assoc.find((p) => p.number === claimed);
-              if (match) prNum = match.number;
-            }
             if (prNum === null) {
-              core.setFailed(
-                'Could not validate the target PR against workflow_run head_sha ' +
-                '(possible artifact poisoning); skipping comment.');
+              core.info(
+                "workflow_run head_sha does not match the claimed PR's current " +
+                'head (stale/cancelled run, or artifact mismatch); skipping comment.');
               return;
             }
 
             // --- build the comment from validated / structured fields only ---
-            const marker = '<!-- nuttx-depends-on-bot -->';
+            // Per-run marker: each Build run gets its OWN comment.  We never
+            // edit or delete comments from previous builds (they remain as a
+            // historical record); the run id only makes THIS build's comment
+            // idempotent if the comment workflow is retried for the same run.
+            const runId = context.payload.workflow_run.id;
+            const marker = `<!-- nuttx-depends-on-bot run-${runId} -->`;
             const runUrl = context.payload.workflow_run.html_url;
+            // The dependency head_sha comes from the (untrusted) artifact, so
+            // only render it if it is a plausible commit SHA (hex); otherwise
+            // omit it rather than echo arbitrary text into the comment.
+            const shortSha = (s) =>
+              (typeof s === 'string' && /^[0-9a-f]{7,40}$/i.test(s)) ? ` @ ${s.slice(0, 10)}` : '';
+
             let body;
             if (status === 'ok') {
               if (deps.length === 0) {
@@ -141,13 +151,44 @@ jobs:
                 return;
               }
               const list = deps
-                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}`)
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}${shortSha(d.head_sha)}`)
                 .join('\n');
               body =
                 `${marker}\n` +
                 `### 🔗 Cross-repo PR dependencies\n\n` +
-                `This PR's CI was built together with the following dependent PR(s):\n\n` +
+                `The CI run below built this PR together with the following ` +
+                `dependent PR(s):\n\n` +
                 `${list}\n\n` +
+                `CI run: ${runUrl}`;
+            } else if (status === 'failed') {
+              // Dependencies were declared and valid, but could not be applied
+              // (fetch/cherry-pick failed), so CI did not build the combined code.
+              if (deps.length === 0) {
+                core.info('status=failed but no valid dependencies after validation; skipping.');
+                return;
+              }
+              const list = deps
+                .map((d) => `- https://github.com/${d.repo}/pull/${d.number}${shortSha(d.head_sha)}`)
+                .join('\n');
+              // Map a structured error code (allow-list) to fixed copy; never
+              // render untrusted free text from the artifact.
+              const REASONS = {
+                fetch_failed: 'the dependency PR could not be fetched (it may not exist)',
+                no_common_base: 'no common base with the dependency PR',
+                rev_list_failed: 'could not determine the dependency commits',
+                cherry_pick_conflict: 'cherry-pick failed (if your PR has merge commits, rebase instead)',
+                unsupported_repo: 'the dependency repository is not supported',
+                report_parse_failed: 'the dependency report could not be read',
+              };
+              const code = typeof report.error_code === 'string' ? report.error_code : '';
+              const reason = REASONS[code] ? `\n\nReason: ${REASONS[code]}` : '';
+              body =
+                `${marker}\n` +
+                `### ❌ Cross-repo dependency could not be applied\n\n` +
+                `The declared dependency PR(s) could not be merged into this ` +
+                `build (fetch or cherry-pick failed), so CI did **not** run ` +
+                `against the combined code:\n\n` +
+                `${list}${reason}\n\n` +
                 `CI run: ${runUrl}`;
             } else {
               // invalid: fixed copy only; never echo untrusted artifact text.
@@ -163,16 +204,23 @@ jobs:
                 `CI run: ${runUrl}`;
             }
 
-            // --- upsert a single bot comment (identified by the marker) ---
-            const { data: comments } = await github.rest.issues.listComments({
-              owner, repo, issue_number: prNum });
-            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            // --- post THIS build's comment (new comment per build) ---
+            // Scope the lookup to a bot-authored comment carrying THIS run's
+            // marker: update it if the comment workflow was retried for the
+            // same run (idempotent), otherwise create a new one.  Comments from
+            // previous builds are never touched.  Paginate so the right comment
+            // is found even on PRs with many comments.
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNum, per_page: 100 });
+            const existing = comments.find((c) =>
+              c.user && c.user.type === 'Bot' && c.body && c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
                 owner, repo, comment_id: existing.id, body });
-              core.info(`Updated comment on PR #${prNum}.`);
+              core.info(`Updated this run's comment on PR #${prNum}.`);
             } else {
               await github.rest.issues.createComment({
                 owner, repo, issue_number: prNum, body });
-              core.info(`Created comment on PR #${prNum}.`);
+              core.info(`Created a new comment on PR #${prNum}.`);
             }
