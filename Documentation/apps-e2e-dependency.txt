@@ -1,0 +1,1 @@
+Staging marker used to verify a nuttx-apps PR depending on a NuttX PR.
