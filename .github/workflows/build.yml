@@ -337,6 +337,8 @@ jobs:
 
   # Select the Linux Builds based on PR Arch Label
   Linux-Arch:
+    # Staging counterpart for apps release E2E; avoid a full matrix on branch creation.
+    if: ${{ false }}
     uses: apache/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
@@ -515,6 +517,8 @@ jobs:
 
   # Select the macOS Builds based on PR Arch Label
   macOS-Arch:
+    # Staging counterpart for apps release E2E; avoid a full matrix on branch creation.
+    if: ${{ false }}
     uses: apache/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
@@ -577,6 +581,8 @@ jobs:
 
   # Select the msys2 Builds based on PR Arch Label
   msys2-Arch:
+    # Staging counterpart for apps release E2E; avoid a full matrix on branch creation.
+    if: ${{ false }}
     uses: apache/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
@@ -660,6 +666,8 @@ jobs:
 
   # Select the msvc Builds based on PR Arch Label
   msvc-Arch:
+    # Staging counterpart for apps release E2E; avoid a full matrix on branch creation.
+    if: ${{ false }}
     uses: apache/nuttx/.github/workflows/arch.yml@master
     needs: Fetch-Source
     with:
