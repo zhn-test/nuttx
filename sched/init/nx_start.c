@@ -187,6 +187,11 @@ struct tasklist_s g_tasklisttable[NUM_TASK_STATES];
 
 volatile enum nx_initstate_e g_nx_initstate;  /* See enum nx_initstate_e */
 
+/* E2E FIXTURE, NOT FOR UPSTREAM: this comment exists only so that a pull
+ * request in this mirror has a same-repository change for the MemBrowse
+ * Depends-On end-to-end test to cherry-pick and build.
+ */
+
 /* This is an array of task control block (TCB) for the IDLE thread of each
  * CPU.  For the non-SMP case, this is a a single TCB; For the SMP case,
  * there is one TCB per CPU.  NOTE: The system boots on CPU0 into the IDLE
