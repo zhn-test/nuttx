@@ -173,7 +173,10 @@ jobs:
       - name: Checkout nuttx-apps repo
         uses: actions/checkout@v7
         with:
-          repository: apache/nuttx-apps
+          # STAGING: mirror repo, and a current apps mirror branch instead of
+          # the intentionally stale zhn-test default branch.
+          repository: zhn-test/nuttx-apps
+          ref: membrowse-apps-base-20260824
           path: sources/apps
           fetch-depth: 1
 
@@ -216,10 +219,13 @@ jobs:
       # would also upload a measurement taken from sources that are not the
       # declared combination.
       - name: Apply depends-on PRs
-        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'master' }}
+        # STAGING: master-equivalent base branch and mirror allow-list.
+        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'membrowse-base-20260824' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUTTX_REPO: zhn-test/nuttx
+          APPS_REPO: zhn-test/nuttx-apps
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
@@ -324,9 +330,10 @@ jobs:
 
             # Same mapping as build.yml, so that the memory report measures the
             # source set Build tests rather than a subset of it.
+            # STAGING: mirror repo names.
             case "$DEP_REPO" in
-              "apache/nuttx")       REPO_PATH=sources/nuttx ;;
-              "apache/nuttx-apps")  REPO_PATH=sources/apps ;;
+              "zhn-test/nuttx")       REPO_PATH=sources/nuttx ;;
+              "zhn-test/nuttx-apps")  REPO_PATH=sources/apps ;;
               *)
                 echo "::error::Unsupported dependency repository: ${DEP_REPO}"
                 exit 1 ;;
@@ -437,6 +444,10 @@ jobs:
       - name: Install membrowse
         run: pip install --no-cache-dir membrowse
       - name: MemBrowse analysis - ${{ matrix.target_name }}
+        # STAGING: the mirror has no MEMBROWSE_API_KEY, so the upload cannot
+        # succeed. The evidence for this change is the apply step and the build
+        # above it, so do not fail the job on the upload.
+        continue-on-error: true
         env:
           MEMBROWSE_API_KEY: ${{ secrets.MEMBROWSE_API_KEY }}
           MEMBROWSE_API_URL: ${{ vars.MEMBROWSE_API_URL }}
